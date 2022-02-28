@@ -9,104 +9,104 @@ on:
 #  workflow_dispatch:
 
 jobs:
-#  build:
-#    runs-on: ubuntu-20.04
-#
-#    strategy:
-#      fail-fast: false
-#      matrix:
-#        profile:
-#        - emqx
-#        otp:
-#        - 24.1.5-3
-#        os:
-#        - ubuntu20.04
-#
-#    container: "ghcr.io/emqx/emqx-builder/5.0-3:${{ matrix.otp }}-${{ matrix.os }}"
-#
-#    steps:
-#    - uses: actions/checkout@v1
-#    - name: build zip packages
-#      run: make ${{ matrix.profile }}-zip
-#    - name: packages test
-#      run: |
-#        export CODE_PATH=$GITHUB_WORKSPACE
-#        EMQX_NAME=${{ matrix.profile }} .ci/build_packages/tests.sh
-#    - uses: actions/upload-artifact@v2
-#      with:
-#        name: ${{ matrix.os}}
-#        path: _packages/**/*.zip
-#
-#  terraform_emqx:
-#    runs-on: ubuntu-latest
-#
-#    needs: [build]
-#    outputs:
-#      emqx_public_ip: ${{ steps.emqx_private_ip.outputs.emqx_public_ip }}
-#      emqx_node_ip1: ${{ steps.emqx_private_ip.outputs.emqx_node_ip1 }}
-#      emqx_node_ip2: ${{ steps.emqx_private_ip.outputs.emqx_node_ip2 }}
-#      emqx_node_ip3: ${{ steps.emqx_private_ip.outputs.emqx_node_ip3 }}
-#    steps:
-#    - uses: actions/checkout@v2
-#    - uses: actions/download-artifact@v2
-#      with:
-#        name: ubuntu20.04
-#        path: /tmp
-#    - name: Download emqx package
-#      run: |
-#        sudo cp /tmp/emqx/*.zip /tmp/emqx.zip
-#    - name: Checkout tf-test-automation
-#      uses: actions/checkout@v2
-#      with:
-#        repository: emqx/tf-test-automation
-#        ref: emqx-broker
-#        path: tf-test-automation
-#    - name: Setup Terraform
-#      uses: hashicorp/setup-terraform@v1.3.2
-#      with:
-#        terraform_wrapper: false
-#    - name: Terraform Init tf-test-automation
-#      working-directory: ./tf-test-automation/services/emqx
-#      id: init1
-#      run: |
-#        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
-#    - name: Terraform Validate tf-test-automation
-#      working-directory: ./tf-test-automation/services/emqx
-#      id: validate1
-#      run: terraform validate -no-color
-#    - name: Terraform Apply tf-test-automation
-#      working-directory: ./tf-test-automation/services/emqx
-#      id: server_ip
-#      run: |
-#        terraform apply -auto-approve -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}" -var="private_key=${{ secrets.CI_SSH_PRIVATE_KEY }}" -var="emqx_package=/tmp/emqx.zip"
-#        echo "::set-output name=emqx_private_ips::$(terraform output emqx_private_ips)"
-#        echo "::set-output name=emqx_public_ips::$(terraform output emqx_public_ips)"
-#    - name: Rename and upload emqx tfstate
-#      working-directory: ./tf-test-automation/services/emqx
-#      run: |
-#        mv ./terraform.tfstate ./emqx.tfstate
-#    - uses: actions/upload-artifact@v2
-#      if: always()
-#      with:
-#        name: tfstate
-#        path: ./tf-test-automation/services/emqx/emqx.tfstate
-#    - name: Show emqx_private_ips
-#      id: emqx_private_ip
-#      run: |
-#        ip1=`echo "${{ steps.server_ip.outputs.emqx_private_ips }}"|awk -F ',' '{print $1}'`
-#        ip2=`echo "${{ steps.server_ip.outputs.emqx_private_ips }}"|awk -F ',' '{print $2}'`
-#        ip3=`echo "${{ steps.server_ip.outputs.emqx_private_ips }}"|awk -F ',' '{print $3}'`
-#        emqx_public_ip=`echo "${{ steps.server_ip.outputs.emqx_public_ips }}"|awk -F ',' '{print $1}'`
-#        echo "::set-output name=emqx_node_ip1::$ip1"
-#        echo "::set-output name=emqx_node_ip2::$ip2"
-#        echo "::set-output name=emqx_node_ip3::$ip3"
-#        echo "::set-output name=emqx_public_ip::$emqx_public_ip"
-#    - name: Show emqx node ip
-#      run: |
-#        echo ${{ steps.emqx_private_ip.outputs.emqx_node_ip1 }}
-#        echo ${{ steps.emqx_private_ip.outputs.emqx_node_ip2 }}
-#        echo ${{ steps.emqx_private_ip.outputs.emqx_node_ip3 }}
-#        echo ${{ steps.emqx_private_ip.outputs.emqx_public_ip }}
+  build:
+    runs-on: ubuntu-20.04
+
+    strategy:
+      fail-fast: false
+      matrix:
+        profile:
+        - emqx
+        otp:
+        - 24.1.5-3
+        os:
+        - ubuntu20.04
+
+    container: "ghcr.io/emqx/emqx-builder/5.0-3:${{ matrix.otp }}-${{ matrix.os }}"
+
+    steps:
+    - uses: actions/checkout@v1
+    - name: build zip packages
+      run: make ${{ matrix.profile }}-zip
+    - name: packages test
+      run: |
+        export CODE_PATH=$GITHUB_WORKSPACE
+        EMQX_NAME=${{ matrix.profile }} .ci/build_packages/tests.sh
+    - uses: actions/upload-artifact@v2
+      with:
+        name: ${{ matrix.os}}
+        path: _packages/**/*.zip
+
+  terraform_emqx:
+    runs-on: ubuntu-latest
+
+    needs: [build]
+    outputs:
+      emqx_public_ip: ${{ steps.emqx_private_ip.outputs.emqx_public_ip }}
+      emqx_node_ip1: ${{ steps.emqx_private_ip.outputs.emqx_node_ip1 }}
+      emqx_node_ip2: ${{ steps.emqx_private_ip.outputs.emqx_node_ip2 }}
+      emqx_node_ip3: ${{ steps.emqx_private_ip.outputs.emqx_node_ip3 }}
+    steps:
+    - uses: actions/checkout@v2
+    - uses: actions/download-artifact@v2
+      with:
+        name: ubuntu20.04
+        path: /tmp
+    - name: Download emqx package
+      run: |
+        sudo cp /tmp/emqx/*.zip /tmp/emqx.zip
+    - name: Checkout tf-test-automation
+      uses: actions/checkout@v2
+      with:
+        repository: emqx/tf-test-automation
+        ref: emqx-broker
+        path: tf-test-automation
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v1.3.2
+      with:
+        terraform_wrapper: false
+    - name: Terraform Init tf-test-automation
+      working-directory: ./tf-test-automation/services/emqx
+      id: init1
+      run: |
+        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
+    - name: Terraform Validate tf-test-automation
+      working-directory: ./tf-test-automation/services/emqx
+      id: validate1
+      run: terraform validate -no-color
+    - name: Terraform Apply tf-test-automation
+      working-directory: ./tf-test-automation/services/emqx
+      id: server_ip
+      run: |
+        terraform apply -auto-approve -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}" -var="private_key=${{ secrets.CI_SSH_PRIVATE_KEY }}" -var="emqx_package=/tmp/emqx.zip"
+        echo "::set-output name=emqx_private_ips::$(terraform output emqx_private_ips)"
+        echo "::set-output name=emqx_public_ips::$(terraform output emqx_public_ips)"
+    - name: Rename and upload emqx tfstate
+      working-directory: ./tf-test-automation/services/emqx
+      run: |
+        mv ./terraform.tfstate ./emqx.tfstate
+    - uses: actions/upload-artifact@v2
+      if: always()
+      with:
+        name: tfstate
+        path: ./tf-test-automation/services/emqx/emqx.tfstate
+    - name: Show emqx_private_ips
+      id: emqx_private_ip
+      run: |
+        ip1=`echo "${{ steps.server_ip.outputs.emqx_private_ips }}"|awk -F ',' '{print $1}'`
+        ip2=`echo "${{ steps.server_ip.outputs.emqx_private_ips }}"|awk -F ',' '{print $2}'`
+        ip3=`echo "${{ steps.server_ip.outputs.emqx_private_ips }}"|awk -F ',' '{print $3}'`
+        emqx_public_ip=`echo "${{ steps.server_ip.outputs.emqx_public_ips }}"|awk -F ',' '{print $1}'`
+        echo "::set-output name=emqx_node_ip1::$ip1"
+        echo "::set-output name=emqx_node_ip2::$ip2"
+        echo "::set-output name=emqx_node_ip3::$ip3"
+        echo "::set-output name=emqx_public_ip::$emqx_public_ip"
+    - name: Show emqx node ip
+      run: |
+        echo ${{ steps.emqx_private_ip.outputs.emqx_node_ip1 }}
+        echo ${{ steps.emqx_private_ip.outputs.emqx_node_ip2 }}
+        echo ${{ steps.emqx_private_ip.outputs.emqx_node_ip3 }}
+        echo ${{ steps.emqx_private_ip.outputs.emqx_public_ip }}
 
 #  xmeter_start:
 #    runs-on: ubuntu-latest
@@ -360,138 +360,138 @@ jobs:
 #      run: |
 #        echo ${{ steps.webhook_ip.outputs.webhook_ip }}
 
-  terraform_kafka:
-    runs-on: ubuntu-latest
-
-    outputs:
-      zk_ip: ${{ steps.zk_ip.outputs.zk_ip }}
-      kafka_ip: ${{ steps.kafka_ip.outputs.kafka_ip }}
-      kafka_bootstrap: ${{ steps.zk_ip.outputs.kafka_bootstrap }}
-      kafka_cli_ip: ${{ steps.kafka_cli_ip.outputs.kafka_cli_ip }}
-    steps:
-     # install kafka cluster
-    - name: Checkout tf-test-automation
-      uses: actions/checkout@v2
-      with:
-        repository: emqx/tf-test-automation
-        ref: emqx-broker
-        path: tf-test-automation
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v1.3.2
-      with:
-        terraform_wrapper: false
-    - name: Terraform Init tf-test-automation
-      working-directory: ./tf-test-automation/services/kafka
-      id: init1
-      run: |
-        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
-    - name: Terraform Validate tf-test-automation
-      working-directory: ./tf-test-automation/services/kafka
-      id: validate1
-      run: terraform validate -no-color
-    - name: Terraform Apply tf-test-automation
-      working-directory: ./tf-test-automation/services/kafka
-      id: zk_ip
-      run: |
-        terraform apply -auto-approve -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
-        echo "::set-output name=zk_ip::$(terraform output zk_ip)"
-        echo "::set-output name=kafka_bootstrap::$(terraform output kafka_bootstrap_brokers_tls)"
-    - name: Rename and upload kafka server tfstate
-      working-directory: ./tf-test-automation/services/kafka
-      run: |
-        mv ./terraform.tfstate ./kafka.tfstate
-    - uses: actions/upload-artifact@v2
-      if: always()
-      with:
-        name: tfstate
-        path: ./tf-test-automation/services/kafka/kafka.tfstate
-    - name: Show kafka ip
-      id: kafka_ip
-      run: |
-        ip=${{ steps.zk_ip.outputs.zk_ip }}
-        echo "::set-output name=kafka_ip::${ip:4:50}"
-    - name: Show kafka url
-      run: |
-        echo ${{ steps.zk_ip.outputs.zk_ip }}
-        echo ${{ steps.zk_ip.outputs.kafka_bootstrap }}
-        echo ${{ steps.kafka_ip.outputs.kafka_ip }}
-    # install kafka client
-    - name: Checkout tf-kafka-client
-      uses: actions/checkout@v2
-      with:
-        repository: emqx/tf-kafka-client
-        path: tf-kafka-client
-    - name: Terraform Init tf-kafka-client
-      working-directory: ./tf-kafka-client
-      id: init2
-      run: |
-        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
-    - name: Terraform Validate tf-kafka-client
-      working-directory: ./tf-kafka-client
-      id: validate2
-      run: terraform validate -no-color
-    - name: Terraform Apply tf-kafka-client
-      working-directory: ./tf-kafka-client
-      id: kafka_cli_ip
-      run: |
-        terraform apply -auto-approve -var="key_name=emqx-ci-robor" -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}" -var="zk_ip=${{ steps.zk_ip.outputs.zk_ip }}" -var="kafka_topic=testTopic1" -var="private_key=${{ secrets.CI_SSH_PRIVATE_KEY }}"
-        echo "::set-output name=kafka_cli_ip::$(terraform output public_ip)"
-    - name: Rename and upload kafka cli tfstate
-      working-directory: ./tf-kafka-client
-      run: |
-        mv terraform.tfstate kafka-cli.tfstate
-    - uses: actions/upload-artifact@v2
-      if: always()
-      with:
-        name: tfstate
-        path: ./tf-kafka-client/kafka-cli.tfstate
-    - name: Show kafka cli ip
-      run: |
-        echo ${{ steps.kafka_cli_ip.outputs.kafka_cli_ip }}
-
-  terraform_pulsar:
-    runs-on: ubuntu-latest
-
-    outputs:
-      pulsar_ip: ${{ steps.pulsar_ip.outputs.pulsar_ip }}
-    steps:
-    - name: Checkout tf-test-automation
-      uses: actions/checkout@v2
-      with:
-        repository: emqx/tf-test-automation
-        ref: emqx-broker
-        path: tf-test-automation
-    - name: Setup Terraform
-      uses: hashicorp/setup-terraform@v1.3.2
-      with:
-        terraform_wrapper: false
-    - name: Terraform Init tf-test-automation
-      working-directory: ./tf-test-automation/services/pulsar
-      id: init
-      run: |
-        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
-    - name: Terraform Validate tf-test-automation
-      working-directory: ./tf-test-automation/services/pulsar
-      id: validate
-      run: terraform validate -no-color
-    - name: Terraform Apply tf-test-automation
-      working-directory: ./tf-test-automation/services/pulsar
-      id: pulsar_ip
-      run: |
-        terraform apply -auto-approve -var="key_name=emqx-ci-robor" -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}" -var="private_key=${{ secrets.CI_SSH_PRIVATE_KEY }}"
-        echo "::set-output name=pulsar_ip::$(terraform output pulsar_private_ips)"
-    - name: Rename and upload pulsar server tfstate
-      working-directory: ./tf-test-automation/services/pulsar
-      run: |
-        mv ./terraform.tfstate ./pulsar.tfstate
-    - uses: actions/upload-artifact@v2
-      if: always()
-      with:
-        name: tfstate
-        path: ./tf-test-automation/services/pulsar/pulsar.tfstate
-    - name: Show pulsar ip
-      run: |
-        echo ${{ steps.pulsar_ip.outputs.pulsar_ip }}
+#  terraform_kafka:
+#    runs-on: ubuntu-latest
+#
+#    outputs:
+#      zk_ip: ${{ steps.zk_ip.outputs.zk_ip }}
+#      kafka_ip: ${{ steps.kafka_ip.outputs.kafka_ip }}
+#      kafka_bootstrap: ${{ steps.zk_ip.outputs.kafka_bootstrap }}
+#      kafka_cli_ip: ${{ steps.kafka_cli_ip.outputs.kafka_cli_ip }}
+#    steps:
+#     # install kafka cluster
+#    - name: Checkout tf-test-automation
+#      uses: actions/checkout@v2
+#      with:
+#        repository: emqx/tf-test-automation
+#        ref: emqx-broker
+#        path: tf-test-automation
+#    - name: Setup Terraform
+#      uses: hashicorp/setup-terraform@v1.3.2
+#      with:
+#        terraform_wrapper: false
+#    - name: Terraform Init tf-test-automation
+#      working-directory: ./tf-test-automation/services/kafka
+#      id: init1
+#      run: |
+#        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
+#    - name: Terraform Validate tf-test-automation
+#      working-directory: ./tf-test-automation/services/kafka
+#      id: validate1
+#      run: terraform validate -no-color
+#    - name: Terraform Apply tf-test-automation
+#      working-directory: ./tf-test-automation/services/kafka
+#      id: zk_ip
+#      run: |
+#        terraform apply -auto-approve -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
+#        echo "::set-output name=zk_ip::$(terraform output zk_ip)"
+#        echo "::set-output name=kafka_bootstrap::$(terraform output kafka_bootstrap_brokers_tls)"
+#    - name: Rename and upload kafka server tfstate
+#      working-directory: ./tf-test-automation/services/kafka
+#      run: |
+#        mv ./terraform.tfstate ./kafka.tfstate
+#    - uses: actions/upload-artifact@v2
+#      if: always()
+#      with:
+#        name: tfstate
+#        path: ./tf-test-automation/services/kafka/kafka.tfstate
+#    - name: Show kafka ip
+#      id: kafka_ip
+#      run: |
+#        ip=${{ steps.zk_ip.outputs.zk_ip }}
+#        echo "::set-output name=kafka_ip::${ip:4:50}"
+#    - name: Show kafka url
+#      run: |
+#        echo ${{ steps.zk_ip.outputs.zk_ip }}
+#        echo ${{ steps.zk_ip.outputs.kafka_bootstrap }}
+#        echo ${{ steps.kafka_ip.outputs.kafka_ip }}
+#    # install kafka client
+#    - name: Checkout tf-kafka-client
+#      uses: actions/checkout@v2
+#      with:
+#        repository: emqx/tf-kafka-client
+#        path: tf-kafka-client
+#    - name: Terraform Init tf-kafka-client
+#      working-directory: ./tf-kafka-client
+#      id: init2
+#      run: |
+#        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
+#    - name: Terraform Validate tf-kafka-client
+#      working-directory: ./tf-kafka-client
+#      id: validate2
+#      run: terraform validate -no-color
+#    - name: Terraform Apply tf-kafka-client
+#      working-directory: ./tf-kafka-client
+#      id: kafka_cli_ip
+#      run: |
+#        terraform apply -auto-approve -var="key_name=emqx-ci-robor" -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}" -var="zk_ip=${{ steps.zk_ip.outputs.zk_ip }}" -var="kafka_topic=testTopic1" -var="private_key=${{ secrets.CI_SSH_PRIVATE_KEY }}"
+#        echo "::set-output name=kafka_cli_ip::$(terraform output public_ip)"
+#    - name: Rename and upload kafka cli tfstate
+#      working-directory: ./tf-kafka-client
+#      run: |
+#        mv terraform.tfstate kafka-cli.tfstate
+#    - uses: actions/upload-artifact@v2
+#      if: always()
+#      with:
+#        name: tfstate
+#        path: ./tf-kafka-client/kafka-cli.tfstate
+#    - name: Show kafka cli ip
+#      run: |
+#        echo ${{ steps.kafka_cli_ip.outputs.kafka_cli_ip }}
+#
+#  terraform_pulsar:
+#    runs-on: ubuntu-latest
+#
+#    outputs:
+#      pulsar_ip: ${{ steps.pulsar_ip.outputs.pulsar_ip }}
+#    steps:
+#    - name: Checkout tf-test-automation
+#      uses: actions/checkout@v2
+#      with:
+#        repository: emqx/tf-test-automation
+#        ref: emqx-broker
+#        path: tf-test-automation
+#    - name: Setup Terraform
+#      uses: hashicorp/setup-terraform@v1.3.2
+#      with:
+#        terraform_wrapper: false
+#    - name: Terraform Init tf-test-automation
+#      working-directory: ./tf-test-automation/services/pulsar
+#      id: init
+#      run: |
+#        terraform init --backend-config="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" --backend-config="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}"
+#    - name: Terraform Validate tf-test-automation
+#      working-directory: ./tf-test-automation/services/pulsar
+#      id: validate
+#      run: terraform validate -no-color
+#    - name: Terraform Apply tf-test-automation
+#      working-directory: ./tf-test-automation/services/pulsar
+#      id: pulsar_ip
+#      run: |
+#        terraform apply -auto-approve -var="key_name=emqx-ci-robor" -var="access_key=${{ secrets.AWS_ACCESS_KEY_ID_FOR_PERFORMANCE_TESTING }}" -var="secret_key=${{ secrets.AWS_SECRET_ACCESS_KEY_FOR_PERFORMANCE_TESTING }}" -var="private_key=${{ secrets.CI_SSH_PRIVATE_KEY }}"
+#        echo "::set-output name=pulsar_ip::$(terraform output pulsar_private_ips)"
+#    - name: Rename and upload pulsar server tfstate
+#      working-directory: ./tf-test-automation/services/pulsar
+#      run: |
+#        mv ./terraform.tfstate ./pulsar.tfstate
+#    - uses: actions/upload-artifact@v2
+#      if: always()
+#      with:
+#        name: tfstate
+#        path: ./tf-test-automation/services/pulsar/pulsar.tfstate
+#    - name: Show pulsar ip
+#      run: |
+#        echo ${{ steps.pulsar_ip.outputs.pulsar_ip }}
 
 #  master_control:
 #    runs-on: ubuntu-latest
