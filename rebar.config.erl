@@ -79,7 +79,12 @@ is_enterprise(ee) -> true.
 
 is_quicer_supported() ->
     not (false =/= os:getenv("BUILD_WITHOUT_QUIC") orelse
-        is_win32() orelse is_centos_6()).
+        is_macos() orelse
+        is_win32() orelse is_centos_6()) orelse
+        "1" == os:getenv("BUILD_WITH_QUIC").
+
+is_macos() ->
+    {unix, darwin} =:= os:type().
 
 is_centos_6() ->
     %% reason:
@@ -156,15 +161,13 @@ profiles_ce() ->
             {erl_opts, prod_compile_opts(ce, Vsn)},
             {relx, relx(Vsn, cloud, bin, ce)},
             {overrides, prod_overrides()},
-            {project_app_dirs, project_app_dirs(ce)},
-            {post_hooks, [{compile, "bash build emqx doc"}]}
+            {project_app_dirs, project_app_dirs(ce)}
         ]},
         {'emqx-pkg', [
             {erl_opts, prod_compile_opts(ce, Vsn)},
             {relx, relx(Vsn, cloud, pkg, ce)},
             {overrides, prod_overrides()},
-            {project_app_dirs, project_app_dirs(ce)},
-            {post_hooks, [{compile, "bash build emqx-pkg doc"}]}
+            {project_app_dirs, project_app_dirs(ce)}
         ]}
     ].
 
@@ -175,15 +178,13 @@ profiles_ee() ->
             {erl_opts, prod_compile_opts(ee, Vsn)},
             {relx, relx(Vsn, cloud, bin, ee)},
             {overrides, prod_overrides()},
-            {project_app_dirs, project_app_dirs(ee)},
-            {post_hooks, [{compile, "bash build emqx-enterprise doc"}]}
+            {project_app_dirs, project_app_dirs(ee)}
         ]},
         {'emqx-enterprise-pkg', [
             {erl_opts, prod_compile_opts(ee, Vsn)},
             {relx, relx(Vsn, cloud, pkg, ee)},
             {overrides, prod_overrides()},
-            {project_app_dirs, project_app_dirs(ee)},
-            {post_hooks, [{compile, "bash build emqx-enterprise-pkg doc"}]}
+            {project_app_dirs, project_app_dirs(ee)}
         ]}
     ].
 
@@ -393,7 +394,9 @@ etc_overlay(ReleaseType, Edition) ->
     Templates = emqx_etc_overlay(ReleaseType, Edition),
     [
         {mkdir, "etc/"},
-        {copy, "{{base_dir}}/lib/emqx/etc/certs", "etc/"}
+        {copy, "{{base_dir}}/lib/emqx/etc/certs", "etc/"},
+        {copy, "apps/emqx_dashboard/priv/www/static/emqx-en.conf.example", "etc/"},
+        {copy, "apps/emqx_dashboard/priv/www/static/emqx-zh.conf.example", "etc/"}
     ] ++
         lists:map(
             fun

@@ -52,14 +52,13 @@ defmodule EMQXUmbrella.MixProject do
       {:jiffy, github: "emqx/jiffy", tag: "1.0.5", override: true},
       {:cowboy, github: "emqx/cowboy", tag: "2.9.0", override: true},
       {:esockd, github: "emqx/esockd", tag: "5.9.3", override: true},
-      {:mria, github: "emqx/mria", tag: "0.2.7", override: true},
-      {:ekka, github: "emqx/ekka", tag: "0.12.8", override: true},
+      {:ekka, github: "emqx/ekka", tag: "0.12.9", override: true},
       {:gen_rpc, github: "emqx/gen_rpc", tag: "2.8.1", override: true},
       {:minirest, github: "emqx/minirest", tag: "1.3.3", override: true},
       {:ecpool, github: "emqx/ecpool", tag: "0.5.2"},
       {:replayq, "0.3.4", override: true},
       {:pbkdf2, github: "emqx/erlang-pbkdf2", tag: "2.0.4", override: true},
-      {:emqtt, github: "emqx/emqtt", tag: "1.5.0", override: true},
+      {:emqtt, github: "emqx/emqtt", tag: "1.5.1", override: true},
       {:rulesql, github: "emqx/rulesql", tag: "0.1.4"},
       {:observer_cli, "1.7.1"},
       {:system_monitor, github: "ieQu1/system_monitor", tag: "3.0.3"},
@@ -115,6 +114,7 @@ defmodule EMQXUmbrella.MixProject do
         } = check_profile!()
 
         base_steps = [
+          &make_docs(&1),
           :assemble,
           &create_RELEASES/1,
           &copy_files(&1, release_type, package_type, edition_type),
@@ -284,6 +284,12 @@ defmodule EMQXUmbrella.MixProject do
   #  Custom Steps
   #############################################################################
 
+  defp make_docs(release) do
+    profile = System.get_env("MIX_ENV")
+    os_cmd("build", [profile, "docs"])
+    release
+  end
+
   defp copy_files(release, release_type, package_type, edition_type) do
     overwrite? = Keyword.get(release.options, :overwrite, false)
 
@@ -321,6 +327,21 @@ defmodule EMQXUmbrella.MixProject do
       "apps/emqx_dashboard/etc/i18n.conf.all",
       Path.join(etc, "i18n.conf"),
       force: overwrite?
+    )
+
+    # copy generated docs
+    Enum.each(
+      [
+        "apps/emqx_dashboard/priv/www/static/emqx-en.conf.example",
+        "apps/emqx_dashboard/priv/www/static/emqx-zh.conf.example"
+      ],
+      fn file ->
+        Mix.Generator.copy_file(
+          file,
+          Path.join(etc, Path.basename(file)),
+          force: overwrite?
+        )
+      end
     )
 
     # this is required by the produced escript / nodetool
@@ -595,8 +616,9 @@ defmodule EMQXUmbrella.MixProject do
     not Enum.any?([
       build_without_quic?(),
       win32?(),
-      centos6?()
-    ])
+      centos6?(),
+      macos?()
+    ]) or "1" == System.get_env("BUILD_WITH_QUIC")
   end
 
   defp pkg_vsn() do
@@ -622,6 +644,10 @@ defmodule EMQXUmbrella.MixProject do
       _ ->
         false
     end
+  end
+
+  defp macos?() do
+    {:unix, :darwin} == :os.type()
   end
 
   defp build_without_quic?() do

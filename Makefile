@@ -7,7 +7,7 @@ export EMQX_DEFAULT_BUILDER = ghcr.io/emqx/emqx-builder/5.0-16:1.13.4-24.2.1-1-d
 export EMQX_DEFAULT_RUNNER = debian:11-slim
 export OTP_VSN ?= $(shell $(CURDIR)/scripts/get-otp-vsn.sh)
 export ELIXIR_VSN ?= $(shell $(CURDIR)/scripts/get-elixir-vsn.sh)
-export EMQX_DASHBOARD_VERSION ?= v0.35.0
+export EMQX_DASHBOARD_VERSION ?= v0.36.0
 export EMQX_REL_FORM ?= tgz
 ifeq ($(OS),Windows_NT)
 	export REBAR_COLOR=none
@@ -115,7 +115,7 @@ ELIXIR_COMMON_DEPS := ensure-hex ensure-mix-rebar3 ensure-mix-rebar
 
 .PHONY: $(REL_PROFILES)
 $(REL_PROFILES:%=%): $(COMMON_DEPS)
-	@$(REBAR) as $(@) do release
+	@$(BUILD) $(@) rel
 
 ## Not calling rebar3 clean because
 ## 1. rebar3 clean relies on rebar3, meaning it reads config, fetches dependencies etc.
@@ -224,7 +224,7 @@ prepare-build-deps:
 ## elixir target is to create release packages using Elixir's Mix
 .PHONY: $(REL_PROFILES:%=%-elixir) $(PKG_PROFILES:%=%-elixir)
 $(REL_PROFILES:%=%-elixir) $(PKG_PROFILES:%=%-elixir): $(COMMON_DEPS) $(ELIXIR_COMMON_DEPS) mix-deps-get
-	@$(BUILD) $(subst -elixir,,$(@)) elixir
+	@env IS_ELIXIR=yes $(BUILD) $(subst -elixir,,$(@)) elixir
 
 .PHONY: $(REL_PROFILES:%=%-elixir-pkg)
 define gen-elixir-pkg-target
@@ -247,3 +247,4 @@ $(foreach tt,$(ALL_ELIXIR_TGZS),$(eval $(call gen-elixir-tgz-target,$(tt))))
 .PHONY: fmt
 fmt: $(REBAR)
 	@./scripts/erlfmt -w '{apps,lib-ee}/*/{src,include,test}/**/*.{erl,hrl,app.src}'
+	@./scripts/erlfmt -w 'rebar.config.erl'
