@@ -16,6 +16,12 @@
 
 -module(emqx_quic_connection).
 
+-ifndef(BUILD_WITHOUT_QUIC).
+-include_lib("quicer/include/quicer.hrl").
+-else.
+-define(QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0).
+-endif.
+
 %% Callbacks
 -export([
     init/1,
@@ -33,9 +39,9 @@ init(ConnOpts) when is_map(ConnOpts) ->
     ConnOpts.
 
 -spec new_conn(quicer:connection_handler(), cb_state()) -> {ok, cb_state()} | {error, any()}.
-new_conn(Conn, S) ->
+new_conn(Conn, #{zone := Zone} = S) ->
     process_flag(trap_exit, true),
-    case emqx_olp:is_overloaded() of
+    case emqx_olp:is_overloaded() andalso is_zone_olp_enabled(Zone) of
         false ->
             {ok, Pid} = emqx_connection:start_link(emqx_quic_stream, {self(), Conn}, S),
             receive
@@ -59,5 +65,14 @@ connected(_Conn, S) ->
 
 -spec shutdown(quicer:connection_handler(), cb_state()) -> {ok, cb_state()} | {error, any()}.
 shutdown(Conn, S) ->
-    quicer:async_close_connection(Conn),
+    quicer:async_shutdown_connection(Conn, ?QUIC_CONNECTION_SHUTDOWN_FLAG_NONE, 0),
     {ok, S}.
+
+-spec is_zone_olp_enabled(emqx_types:zone()) -> boolean().
+is_zone_olp_enabled(Zone) ->
+    case emqx_config:get_zone_conf(Zone, [overload_protection]) of
+        #{enable := true} ->
+            true;
+        _ ->
+            false
+    end.

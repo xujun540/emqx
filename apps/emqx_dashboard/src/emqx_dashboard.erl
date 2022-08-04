@@ -30,6 +30,7 @@
     init_i18n/2,
     init_i18n/0,
     get_i18n/0,
+    i18n_file/0,
     clear_i18n/0
 ]).
 
@@ -38,6 +39,7 @@
 
 -include_lib("emqx/include/logger.hrl").
 -include_lib("emqx/include/http_api.hrl").
+-include_lib("emqx/include/emqx_release.hrl").
 
 -define(BASE_PATH, "/api/v5").
 
@@ -58,7 +60,7 @@ start_listeners(Listeners) ->
     Authorization = {?MODULE, authorize},
     GlobalSpec = #{
         openapi => "3.0.0",
-        info => #{title => "EMQX API", version => "5.0.0"},
+        info => #{title => "EMQX API", version => ?EMQX_API_VERSION},
         servers => [#{url => ?BASE_PATH}],
         components => #{
             schemas => #{},
@@ -90,7 +92,7 @@ start_listeners(Listeners) ->
                 case minirest:start(Name, RanchOptions, Minirest) of
                     {ok, _} ->
                         ?ULOG("Listener ~ts on ~ts started.~n", [
-                            Name, emqx_listeners:format_addr(Bind)
+                            Name, emqx_listeners:format_bind(Bind)
                         ]),
                         Acc;
                     {error, _Reason} ->
@@ -112,7 +114,7 @@ stop_listeners(Listeners) ->
             case minirest:stop(Name) of
                 ok ->
                     ?ULOG("Stop listener ~ts on ~ts successfully.~n", [
-                        Name, emqx_listeners:format_addr(Port)
+                        Name, emqx_listeners:format_bind(Port)
                     ]);
                 {error, not_found} ->
                     ?SLOG(warning, #{msg => "stop_listener_failed", name => Name, port => Port})
@@ -157,7 +159,7 @@ listeners(Listeners) ->
             maps:get(enable, Conf) andalso
                 begin
                     {Conf1, Bind} = ip_port(Conf),
-                    {true, {listener_name(Protocol, Conf1), Protocol, Bind, ranch_opts(Conf1)}}
+                    {true, {listener_name(Protocol), Protocol, Bind, ranch_opts(Conf1)}}
                 end
         end,
         maps:to_list(Listeners)
@@ -206,19 +208,8 @@ ranch_opts(Options) ->
 filter_false(_K, false, S) -> S;
 filter_false(K, V, S) -> [{K, V} | S].
 
-listener_name(Protocol, #{port := Port, ip := IP}) ->
-    Name =
-        "dashboard:" ++
-            atom_to_list(Protocol) ++ ":" ++
-            inet:ntoa(IP) ++ ":" ++
-            integer_to_list(Port),
-    list_to_atom(Name);
-listener_name(Protocol, #{port := Port}) ->
-    Name =
-        "dashboard:" ++
-            atom_to_list(Protocol) ++ ":" ++
-            integer_to_list(Port),
-    list_to_atom(Name).
+listener_name(Protocol) ->
+    list_to_atom(atom_to_list(Protocol) ++ ":dashboard").
 
 authorize(Req) ->
     case cowboy_req:parse_header(<<"authorization">>, Req) of
@@ -271,7 +262,7 @@ return_unauthorized(Code, Message) ->
 
 i18n_file() ->
     case application:get_env(emqx_dashboard, i18n_file) of
-        undefined -> emqx:etc_file("i18n.conf");
+        undefined -> filename:join([code:priv_dir(emqx_dashboard), "i18n.conf"]);
         {ok, File} -> File
     end.
 

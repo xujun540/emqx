@@ -24,6 +24,7 @@
 -export([namespace/0, namespace/1, fields/1]).
 -export([schema_with_example/2, schema_with_examples/2]).
 -export([error_codes/1, error_codes/2]).
+-export([file_schema/1]).
 
 -export([filter_check_request/2, filter_check_request_and_translate_body/2]).
 
@@ -165,6 +166,20 @@ error_codes(Codes = [_ | _], MsgDesc) ->
             })}
     ].
 
+file_schema(FileName) ->
+    #{
+        content => #{
+            'multipart/form-data' => #{
+                schema => #{
+                    type => object,
+                    properties => #{
+                        FileName => #{type => string, format => binary}
+                    }
+                }
+            }
+        }
+    }.
+
 %%------------------------------------------------------------------------------
 %% Private functions
 %%------------------------------------------------------------------------------
@@ -185,12 +200,7 @@ translate_req(Request, #{module := Module, path := Path, method := Method}, Chec
         {ok, Request#{bindings => Bindings, query_string => QueryStr, body => NewBody}}
     catch
         throw:HoconError ->
-            Msg = serialize_hocon_error_msg(HoconError),
-            %Msg = [
-            %    io_lib:format("~ts : ~p", [Key -- "root.", Reason])
-            %    || {validation_error, #{path := Key, reason := Reason}} <- ValidErrors
-            % ],
-            % iolist_to_binary(string:join(Msg, ",")
+            Msg = hocon_error_msg(HoconError),
             {400, 'BAD_REQUEST', Msg}
     end.
 
@@ -328,10 +338,17 @@ to_spec(Meta, Params, RequestBody, Responses) ->
     maps:put('requestBody', RequestBody, Spec).
 
 generate_method_desc(Spec = #{desc := _Desc}) ->
-    trans_description(maps:remove(desc, Spec), Spec);
+    Spec1 = trans_description(maps:remove(desc, Spec), Spec),
+    trans_tags(Spec1);
 generate_method_desc(Spec = #{description := _Desc}) ->
-    trans_description(Spec, Spec);
+    Spec1 = trans_description(Spec, Spec),
+    trans_tags(Spec1);
 generate_method_desc(Spec) ->
+    trans_tags(Spec).
+
+trans_tags(Spec = #{tags := Tags}) ->
+    Spec#{tags => [string:titlecase(to_bin(Tag)) || Tag <- Tags]};
+trans_tags(Spec) ->
     Spec.
 
 parameters(Params, Module) ->
@@ -760,6 +777,8 @@ to_bin(List) when is_list(List) ->
     end;
 to_bin(Boolean) when is_boolean(Boolean) -> Boolean;
 to_bin(Atom) when is_atom(Atom) -> atom_to_binary(Atom, utf8);
+to_bin({Type, Args}) ->
+    unicode:characters_to_binary(io_lib:format("~p(~p)", [Type, Args]));
 to_bin(X) ->
     X.
 
@@ -826,25 +845,5 @@ to_ref(Mod, StructName, Acc, RefsAcc) ->
 schema_converter(Options) ->
     maps:get(schema_converter, Options, fun hocon_schema_to_spec/2).
 
-serialize_hocon_error_msg({_Schema, Errors}) ->
-    Msg =
-        case lists:map(fun hocon_error/1, Errors) of
-            [Error0] -> Error0;
-            Errors -> Errors
-        end,
-    iolist_to_binary(io_lib:format("~0p", [Msg]));
-serialize_hocon_error_msg(Error) ->
-    iolist_to_binary(io_lib:format("~0p", [Error])).
-
-hocon_error({Type, #{path := Path} = Error}) ->
-    Error1 = maps:without([path, stacktrace], Error),
-    Error1#{
-        path => sub_path(Path),
-        type => Type,
-        reason => remove_useless_field(maps:get(reason, Error, #{}))
-    }.
-
-sub_path(Path) -> string:trim(Path, leading, "root.").
-
-remove_useless_field(#{} = Field) -> maps:without([stacktrace], Field);
-remove_useless_field(Field) -> Field.
+hocon_error_msg(Reason) ->
+    emqx_misc:readable_error_msg(Reason).

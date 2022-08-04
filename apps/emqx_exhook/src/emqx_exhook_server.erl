@@ -18,6 +18,7 @@
 
 -include("emqx_exhook.hrl").
 -include_lib("emqx/include/logger.hrl").
+-include_lib("emqx/include/emqx_hooks.hrl").
 
 %% The exhook proto version should be fixed as `v2` in EMQX v5.x
 %% to make sure the exhook proto version is compatible
@@ -129,14 +130,19 @@ load(Name, #{request_timeout := Timeout, failed_action := FailedAction} = Opts) 
     end.
 
 %% @private
-channel_opts(Opts = #{url := URL}) ->
+channel_opts(Opts = #{url := URL, socket_options := SockOptsT}) ->
     ClientOpts = maps:merge(
         #{pool_size => erlang:system_info(schedulers)},
         Opts
     ),
+    SockOpts = maps:to_list(SockOptsT),
     case uri_string:parse(URL) of
         #{scheme := <<"http">>, host := Host, port := Port} ->
-            {ok, {format_http_uri("http", Host, Port), ClientOpts}};
+            NClientOpts = ClientOpts#{
+                gun_opts =>
+                    #{transport_opts => SockOpts}
+            },
+            {ok, {format_http_uri("http", Host, Port), NClientOpts}};
         #{scheme := <<"https">>, host := Host, port := Port} ->
             SslOpts =
                 case maps:get(ssl, Opts, undefined) of
@@ -157,7 +163,7 @@ channel_opts(Opts = #{url := URL}) ->
                 gun_opts =>
                     #{
                         transport => ssl,
-                        transport_opts => SslOpts
+                        transport_opts => SockOpts ++ SslOpts
                     }
             },
             {ok, {format_http_uri("https", Host, Port), NClientOpts}};
@@ -255,7 +261,7 @@ ensure_hooks(HookSpecs) ->
                 false ->
                     ?SLOG(error, #{msg => "skipped_unknown_hookpoint", hookpoint => Hookpoint});
                 {Hookpoint, {M, F, A}} ->
-                    emqx_hooks:put(Hookpoint, {M, F, A}),
+                    emqx_hooks:put(Hookpoint, {M, F, A}, ?HP_EXHOOK),
                     ets:update_counter(?HOOKS_REF_COUNTER, Hookpoint, {2, 1}, {Hookpoint, 0})
             end
         end,
@@ -363,8 +369,11 @@ match_topic_filter(TopicName, TopicFilter) ->
 
 -spec do_call(binary(), atom(), atom(), map(), map()) -> {ok, map()} | {error, term()}.
 do_call(ChannName, Hookpoint, Fun, Req, ReqOpts) ->
-    Options = ReqOpts#{channel => ChannName},
     NReq = Req#{meta => emqx_exhook_handler:request_meta()},
+    Options = ReqOpts#{
+        channel => ChannName,
+        key_dispatch => key_dispatch(NReq)
+    },
     ?SLOG(debug, #{
         msg => "do_call",
         module => ?PB_CLIENT_MOD,
@@ -475,3 +484,13 @@ available_hooks() ->
         'session.terminated'
         | message_hooks()
     ].
+
+%% @doc Get dispatch_key for each request
+key_dispatch(_Req = #{clientinfo := #{clientid := ClientId}}) ->
+    ClientId;
+key_dispatch(_Req = #{conninfo := #{clientid := ClientId}}) ->
+    ClientId;
+key_dispatch(_Req = #{message := #{from := From}}) ->
+    From;
+key_dispatch(_Req) ->
+    self().

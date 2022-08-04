@@ -139,13 +139,19 @@ on_query(InstId, {Type, NameOrSQL, Params}, AfterQuery, #{poolname := PoolName} 
     end,
     Result.
 
-on_get_status(_InstId, #{poolname := PoolName, auto_reconnect := AutoReconn}) ->
-    emqx_plugin_libs_pool:get_status(PoolName, fun ?MODULE:do_get_status/1, AutoReconn).
+on_get_status(_InstId, #{poolname := Pool, auto_reconnect := AutoReconn}) ->
+    case emqx_plugin_libs_pool:health_check_ecpool_workers(Pool, fun ?MODULE:do_get_status/1) of
+        true -> connected;
+        false -> conn_status(AutoReconn)
+    end.
 
 do_get_status(Conn) ->
     ok == element(1, epgsql:squery(Conn, "SELECT count(1) AS T")).
 
 %% ===================================================================
+conn_status(_AutoReconn = true) -> connecting;
+conn_status(_AutoReconn = false) -> disconnected.
+
 reconn_interval(true) -> 15;
 reconn_interval(false) -> false.
 
@@ -186,8 +192,13 @@ conn_opts([], Acc) ->
     Acc;
 conn_opts([Opt = {database, _} | Opts], Acc) ->
     conn_opts(Opts, [Opt | Acc]);
-conn_opts([Opt = {ssl, _} | Opts], Acc) ->
-    conn_opts(Opts, [Opt | Acc]);
+conn_opts([{ssl, Bool} | Opts], Acc) when is_boolean(Bool) ->
+    Flag =
+        case Bool of
+            true -> required;
+            false -> false
+        end,
+    conn_opts(Opts, [{ssl, Flag} | Acc]);
 conn_opts([Opt = {port, _} | Opts], Acc) ->
     conn_opts(Opts, [Opt | Acc]);
 conn_opts([Opt = {timeout, _} | Opts], Acc) ->

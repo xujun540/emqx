@@ -51,7 +51,8 @@
     gen_id/1,
     explain_posix/1,
     pmap/2,
-    pmap/3
+    pmap/3,
+    readable_error_msg/1
 ]).
 
 -export([
@@ -472,7 +473,14 @@ do_parallel_map(Fun, List) ->
         fun(Item) ->
             erlang:spawn_link(
                 fun() ->
-                    Parent ! {self(), Fun(Item)}
+                    Res =
+                        try
+                            {normal, Fun(Item)}
+                        catch
+                            C:E:St ->
+                                {exception, {C, E, St}}
+                        end,
+                    Parent ! {self(), Res}
                 end
             )
         end,
@@ -481,8 +489,10 @@ do_parallel_map(Fun, List) ->
     lists:foldr(
         fun(Pid, Acc) ->
             receive
-                {Pid, Result} ->
-                    [Result | Acc]
+                {Pid, {normal, Result}} ->
+                    [Result | Acc];
+                {Pid, {exception, {C, E, St}}} ->
+                    erlang:raise(C, E, St)
             end
         end,
         [],
@@ -508,6 +518,20 @@ pad(L, 0) ->
     L;
 pad(L, Count) ->
     pad([$0 | L], Count - 1).
+
+readable_error_msg(Msg) when is_binary(Msg) -> Msg;
+readable_error_msg(Error) ->
+    case io_lib:printable_unicode_list(Error) of
+        true ->
+            unicode:characters_to_binary(Error, utf8);
+        false ->
+            case emqx_hocon:format_error(Error, #{no_stacktrace => true}) of
+                {ok, Msg} ->
+                    Msg;
+                false ->
+                    iolist_to_binary(io_lib:format("~0p", [Error]))
+            end
+    end.
 
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").

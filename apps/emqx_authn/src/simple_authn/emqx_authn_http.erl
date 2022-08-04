@@ -188,51 +188,23 @@ authenticate(
     } = State
 ) ->
     Request = generate_request(Credential, State),
-    case emqx_resource:query(ResourceId, {Method, Request, RequestTimeout}) of
+    Response = emqx_resource:query(ResourceId, {Method, Request, RequestTimeout}),
+    ?TRACE_AUTHN_PROVIDER("http_response", #{
+        request => request_for_log(Credential, State),
+        response => response_for_log(Response),
+        resource => ResourceId
+    }),
+    case Response of
         {ok, 204, _Headers} ->
             {ok, #{is_superuser => false}};
-        {ok, 200, _Headers} ->
-            {ok, #{is_superuser => false}};
         {ok, 200, Headers, Body} ->
-            ContentType = proplists:get_value(<<"content-type">>, Headers, <<"application/json">>),
-            case safely_parse_body(ContentType, Body) of
-                {ok, NBody} ->
-                    %% TODO: Return by user property
-                    UserProperty = maps:remove(<<"is_superuser">>, NBody),
-                    IsSuperuser = emqx_authn_utils:is_superuser(NBody),
-                    {ok, IsSuperuser#{user_property => UserProperty}};
-                {error, _Reason} ->
-                    {ok, #{is_superuser => false}}
-            end;
-        {error, Reason} ->
-            ?SLOG(error, #{
-                msg => "http_server_query_failed",
-                resource => ResourceId,
-                reason => Reason
-            }),
+            handle_response(Headers, Body);
+        {ok, _StatusCode, _Headers} = Response ->
             ignore;
-        Other ->
-            Output = may_append_body(#{resource => ResourceId}, Other),
-            case erlang:element(2, Other) of
-                Code5xx when Code5xx >= 500 andalso Code5xx < 600 ->
-                    ?SLOG(error, Output#{
-                        msg => "http_server_error",
-                        code => Code5xx
-                    }),
-                    ignore;
-                Code4xx when Code4xx >= 400 andalso Code4xx < 500 ->
-                    ?SLOG(warning, Output#{
-                        msg => "refused_by_http_server",
-                        code => Code4xx
-                    }),
-                    {error, not_authorized};
-                OtherCode ->
-                    ?SLOG(error, Output#{
-                        msg => "undesired_response_code",
-                        code => OtherCode
-                    }),
-                    ignore
-            end
+        {ok, _StatusCode, _Headers, _Body} = Response ->
+            ignore;
+        {error, _Reason} ->
+            ignore
     end.
 
 destroy(#{resource_id := ResourceId}) ->
@@ -323,7 +295,8 @@ parse_config(
             cow_qs:parse_qs(to_bin(Query))
         ),
         body_template => emqx_authn_utils:parse_deep(maps:get(body, Config, #{})),
-        request_timeout => RequestTimeout
+        request_timeout => RequestTimeout,
+        url => RawUrl
     },
     {Config#{base_url => BaseUrl, pool_type => random}, State}.
 
@@ -366,27 +339,45 @@ qs([{K, V} | More], Acc) ->
 serialize_body(<<"application/json">>, Body) ->
     emqx_json:encode(Body);
 serialize_body(<<"application/x-www-form-urlencoded">>, Body) ->
-    qs(Body).
+    qs(maps:to_list(Body)).
+
+handle_response(Headers, Body) ->
+    ContentType = proplists:get_value(<<"content-type">>, Headers),
+    case safely_parse_body(ContentType, Body) of
+        {ok, NBody} ->
+            case maps:get(<<"result">>, NBody, <<"ignore">>) of
+                <<"allow">> ->
+                    Res = emqx_authn_utils:is_superuser(NBody),
+                    %% TODO: Return by user property
+                    {ok, Res#{user_property => maps:get(<<"user_property">>, NBody, #{})}};
+                <<"deny">> ->
+                    {error, not_authorized};
+                <<"ignore">> ->
+                    ignore;
+                _ ->
+                    ignore
+            end;
+        {error, _Reason} ->
+            ignore
+    end.
 
 safely_parse_body(ContentType, Body) ->
-    try parse_body(ContentType, Body) of
-        Result -> Result
+    try
+        parse_body(ContentType, Body)
     catch
         _Class:_Reason ->
             {error, invalid_body}
     end.
 
-parse_body(<<"application/json">>, Body) ->
+parse_body(<<"application/json", _/binary>>, Body) ->
     {ok, emqx_json:decode(Body, [return_maps])};
-parse_body(<<"application/x-www-form-urlencoded">>, Body) ->
-    {ok, maps:from_list(cow_qs:parse_qs(Body))};
+parse_body(<<"application/x-www-form-urlencoded", _/binary>>, Body) ->
+    Flags = [<<"result">>, <<"is_superuser">>],
+    RawMap = maps:from_list(cow_qs:parse_qs(Body)),
+    NBody = maps:with(Flags, RawMap),
+    {ok, NBody};
 parse_body(ContentType, _) ->
     {error, {unsupported_content_type, ContentType}}.
-
-may_append_body(Output, {ok, _, _, Body}) ->
-    Output#{body => Body};
-may_append_body(Output, {ok, _, _}) ->
-    Output.
 
 uri_encode(T) ->
     emqx_http_lib:uri_encode(to_list(T)).
@@ -394,6 +385,33 @@ uri_encode(T) ->
 encode_path(Path) ->
     Parts = string:split(Path, "/", all),
     lists:flatten(["/" ++ Part || Part <- lists:map(fun uri_encode/1, Parts)]).
+
+request_for_log(Credential, #{url := Url} = State) ->
+    SafeCredential = emqx_authn_utils:without_password(Credential),
+    case generate_request(SafeCredential, State) of
+        {PathQuery, Headers} ->
+            #{
+                method => post,
+                base_url => Url,
+                path_query => PathQuery,
+                headers => Headers
+            };
+        {PathQuery, Headers, Body} ->
+            #{
+                method => post,
+                base_url => Url,
+                path_query => PathQuery,
+                headers => Headers,
+                mody => Body
+            }
+    end.
+
+response_for_log({ok, StatusCode, Headers}) ->
+    #{status => StatusCode, headers => Headers};
+response_for_log({ok, StatusCode, Headers, Body}) ->
+    #{status => StatusCode, headers => Headers, body => Body};
+response_for_log({error, Error}) ->
+    #{error => Error}.
 
 to_list(A) when is_atom(A) ->
     atom_to_list(A);

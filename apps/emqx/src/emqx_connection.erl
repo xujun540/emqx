@@ -321,7 +321,7 @@ init_state(
     },
 
     LimiterTypes = [?LIMITER_BYTES_IN, ?LIMITER_MESSAGE_IN],
-    Limiter = emqx_limiter_container:get_limiter_by_names(LimiterTypes, LimiterCfg),
+    Limiter = emqx_limiter_container:get_limiter_by_types(Listener, LimiterTypes, LimiterCfg),
 
     FrameOpts = #{
         strict_mode => emqx_config:get_zone_conf(Zone, [mqtt, strict_mode]),
@@ -672,12 +672,6 @@ handle_call(_From, info, State) ->
     {reply, info(State), State};
 handle_call(_From, stats, State) ->
     {reply, stats(State), State};
-handle_call(_From, {ratelimit, Changes}, State = #state{limiter = Limiter}) ->
-    Fun = fun({Type, Bucket}, Acc) ->
-        emqx_limiter_container:update_by_name(Type, Bucket, Acc)
-    end,
-    Limiter2 = lists:foldl(Fun, Limiter, Changes),
-    {reply, ok, State#state{limiter = Limiter2}};
 handle_call(_From, Req, State = #state{channel = Channel}) ->
     case emqx_channel:handle_call(Req, Channel) of
         {reply, Reply, NChannel} ->
@@ -956,7 +950,7 @@ check_limiter(
                 {ok, Limiter2} ->
                     WhenOk(Data, Msgs, State#state{limiter = Limiter2});
                 {pause, Time, Limiter2} ->
-                    ?SLOG(warning, #{
+                    ?SLOG(debug, #{
                         msg => "pause_time_dueto_rate_limit",
                         needs => Needs,
                         time_in_ms => Time
@@ -982,8 +976,7 @@ check_limiter(
         _ ->
             %% if there has a retry timer,
             %% cache the operation and execute it after the retry is over
-            %% TODO: maybe we need to set socket to passive if size of queue is very large
-            %% because we queue up lots of ops that checks with the limiters.
+            %% the maximum length of the cache queue is equal to the active_n
             New = #cache{need = Needs, data = Data, next = WhenOk},
             {ok, State#state{limiter_cache = queue:in(New, Cache)}}
     end;
@@ -1006,7 +999,7 @@ retry_limiter(#state{limiter = Limiter} = State) ->
                 }
             );
         {pause, Time, Limiter2} ->
-            ?SLOG(warning, #{
+            ?SLOG(debug, #{
                 msg => "pause_time_dueto_rate_limit",
                 types => Types,
                 time_in_ms => Time

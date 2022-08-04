@@ -144,7 +144,7 @@ get_root([RootName | _]) ->
 %% @doc For the given path, get raw root value enclosed in a single-key map.
 %% key is ensured to be binary.
 get_root_raw([RootName | _]) ->
-    #{bin(RootName) => do_get(?RAW_CONF, [RootName], #{})}.
+    #{bin(RootName) => do_get_raw([RootName], #{})}.
 
 %% @doc Get a config value for the given path.
 %% The path should at least include root config name.
@@ -173,7 +173,7 @@ find(KeyPath) ->
     {ok, term()} | {not_found, emqx_map_lib:config_key_path(), term()}.
 find_raw([]) ->
     Ref = make_ref(),
-    case do_get(?RAW_CONF, [], Ref) of
+    case do_get_raw([], Ref) of
         Ref -> {not_found, []};
         Res -> {ok, Res}
     end;
@@ -281,10 +281,10 @@ get_default_value([RootName | _] = KeyPath) ->
     end.
 
 -spec get_raw(emqx_map_lib:config_key_path()) -> term().
-get_raw(KeyPath) -> hocon_tconf:remove_env_meta(do_get(?RAW_CONF, KeyPath)).
+get_raw(KeyPath) -> do_get_raw(KeyPath).
 
 -spec get_raw(emqx_map_lib:config_key_path(), term()) -> term().
-get_raw(KeyPath, Default) -> hocon_tconf:remove_env_meta(do_get(?RAW_CONF, KeyPath, Default)).
+get_raw(KeyPath, Default) -> do_get_raw(KeyPath, Default).
 
 -spec put_raw(map()) -> ok.
 put_raw(Config) ->
@@ -398,11 +398,11 @@ include_dirs() ->
     [filename:join(emqx:data_dir(), "configs")].
 
 merge_envs(SchemaMod, RawConf) ->
-    %% TODO: evil, remove, required should be declared in schema
     Opts = #{
         required => false,
         format => map,
-        apply_override_envs => true
+        apply_override_envs => true,
+        check_lazy => true
     },
     hocon_tconf:merge_env_overrides(SchemaMod, RawConf, all, Opts).
 
@@ -508,14 +508,15 @@ get_schema_mod(RootName) ->
 get_root_names() ->
     maps:get(names, persistent_term:get(?PERSIS_SCHEMA_MODS, #{names => []})).
 
--spec save_configs(app_envs(), config(), raw_config(), raw_config(), update_opts()) ->
-    ok | {error, term()}.
+-spec save_configs(app_envs(), config(), raw_config(), raw_config(), update_opts()) -> ok.
 save_configs(_AppEnvs, Conf, RawConf, OverrideConf, Opts) ->
+    %% We first try to save to override.conf, because saving to files is more error prone
+    %% than saving into memory.
+    ok = save_to_override_conf(OverrideConf, Opts),
     %% We may need also support hot config update for the apps that use application envs.
     %% If that is the case uncomment the following line to update the configs to app env
-    %save_to_app_env(AppEnvs),
-    save_to_config_map(Conf, RawConf),
-    save_to_override_conf(OverrideConf, Opts).
+    %save_to_app_env(_AppEnvs),
+    save_to_config_map(Conf, RawConf).
 
 -spec save_to_app_env([tuple()]) -> ok.
 save_to_app_env(AppEnvs) ->
@@ -555,10 +556,12 @@ save_to_override_conf(RawConf, Opts) ->
 
 add_handlers() ->
     ok = emqx_config_logger:add_handler(),
+    emqx_sys_mon:add_handler(),
     ok.
 
 remove_handlers() ->
     ok = emqx_config_logger:remove_handler(),
+    emqx_sys_mon:remove_handler(),
     ok.
 
 load_hocon_file(FileName, LoadType) ->
@@ -570,6 +573,12 @@ load_hocon_file(FileName, LoadType) ->
         false ->
             #{}
     end.
+
+do_get_raw(Path) ->
+    hocon_tconf:remove_env_meta(do_get(?RAW_CONF, Path)).
+
+do_get_raw(Path, Default) ->
+    hocon_tconf:remove_env_meta(do_get(?RAW_CONF, Path, Default)).
 
 do_get(Type, KeyPath) ->
     Ref = make_ref(),

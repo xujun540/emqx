@@ -25,11 +25,16 @@
 
 -import(hoconsc, [mk/2, ref/2, array/1]).
 
+-export([printable_function_name/2]).
+
 %% Swagger specs from hocon schema
 -export([api_spec/0, paths/0, schema/1, namespace/0]).
 
 %% API callbacks
 -export(['/rule_events'/2, '/rule_test'/2, '/rules'/2, '/rules/:id'/2, '/rules/:id/reset_metrics'/2]).
+
+%% query callback
+-export([query/4]).
 
 -define(ERR_NO_RULE(ID), list_to_binary(io_lib:format("Rule ~ts Not Found", [(ID)]))).
 -define(ERR_BADARGS(REASON), begin
@@ -107,6 +112,15 @@ end).
     }
 ).
 
+-define(RULE_QS_SCHEMA, [
+    {<<"enable">>, atom},
+    {<<"from">>, binary},
+    {<<"like_id">>, binary},
+    {<<"like_from">>, binary},
+    {<<"match_from">>, binary},
+    {<<"like_description">>, binary}
+]).
+
 namespace() -> "rule".
 
 api_spec() ->
@@ -132,9 +146,31 @@ schema("/rules") ->
         get => #{
             tags => [<<"rules">>],
             description => ?DESC("api1"),
+            parameters => [
+                {enable,
+                    mk(boolean(), #{desc => ?DESC("api1_enable"), in => query, required => false})},
+                {from, mk(binary(), #{desc => ?DESC("api1_from"), in => query, required => false})},
+                {like_id,
+                    mk(binary(), #{desc => ?DESC("api1_like_id"), in => query, required => false})},
+                {like_from,
+                    mk(binary(), #{desc => ?DESC("api1_like_from"), in => query, required => false})},
+                {like_description,
+                    mk(binary(), #{
+                        desc => ?DESC("api1_like_description"), in => query, required => false
+                    })},
+                {match_from,
+                    mk(binary(), #{desc => ?DESC("api1_match_from"), in => query, required => false})},
+                ref(emqx_dashboard_swagger, page),
+                ref(emqx_dashboard_swagger, limit)
+            ],
             summary => <<"List Rules">>,
             responses => #{
-                200 => mk(array(rule_info_schema()), #{desc => ?DESC("desc9")})
+                200 =>
+                    [
+                        {data, mk(array(rule_info_schema()), #{desc => ?DESC("desc9")})},
+                        {meta, mk(ref(emqx_dashboard_swagger, meta), #{})}
+                    ],
+                400 => error_schema('BAD_REQUEST', "Invalid Parameters")
             }
         },
         post => #{
@@ -231,23 +267,30 @@ param_path_id() ->
 %% Rules API
 %%------------------------------------------------------------------------------
 
-%% To get around the hocon bug, we replace crlf with spaces
-replace_sql_clrf(#{<<"sql">> := SQL} = Params) ->
-    NewSQL = re:replace(SQL, "[\r\n]", " ", [{return, binary}, global]),
-    Params#{<<"sql">> => NewSQL}.
-
 '/rule_events'(get, _Params) ->
     {200, emqx_rule_events:event_info()}.
 
-'/rules'(get, _Params) ->
-    Records = emqx_rule_engine:get_rules_ordered_by_ts(),
-    {200, format_rule_resp(Records)};
+'/rules'(get, #{query_string := QueryString}) ->
+    case
+        emqx_mgmt_api:node_query(
+            node(),
+            QueryString,
+            ?RULE_TAB,
+            ?RULE_QS_SCHEMA,
+            {?MODULE, query}
+        )
+    of
+        {error, page_limit_invalid} ->
+            {400, #{code => 'BAD_REQUEST', message => <<"page_limit_invalid">>}};
+        Result ->
+            {200, Result}
+    end;
 '/rules'(post, #{body := Params0}) ->
     case maps:get(<<"id">>, Params0, list_to_binary(emqx_misc:gen_id(8))) of
         <<>> ->
             {400, #{code => 'BAD_REQUEST', message => <<"empty rule id is not allowed">>}};
         Id ->
-            Params = filter_out_request_body(replace_sql_clrf(Params0)),
+            Params = filter_out_request_body(add_metadata(Params0)),
             ConfPath = emqx_rule_engine:config_key_path() ++ [Id],
             case emqx_rule_engine:get_rule(Id) of
                 {ok, _Rule} ->
@@ -334,29 +377,12 @@ replace_sql_clrf(#{<<"sql">> := SQL} = Params) ->
 %% Internal functions
 %%------------------------------------------------------------------------------
 
-err_msg({_, HoconErrors = [{Type, _} | _]}) when
-    Type == translation_error orelse Type == validation_error
-->
-    MessageFormat = [hocon_error(HoconError) || HoconError <- HoconErrors],
-    list_to_binary(MessageFormat);
-err_msg(Msg) ->
-    list_to_binary(io_lib:format("~0p", [Msg])).
-
-hocon_error({Type, Message0}) when
-    Type == translation_error orelse Type == validation_error
-->
-    case maps:get(reason, Message0, undefined) of
-        undefined ->
-            Message = maps:without([stacktrace], Message0),
-            emqx_logger_jsonfmt:best_effort_json(Message#{<<"type">> => Type}, []);
-        Reason when is_binary(Reason) ->
-            Reason;
-        Reason ->
-            list_to_binary(io_lib:format("~0p", [Reason]))
-    end.
+err_msg(Msg) -> emqx_misc:readable_error_msg(Msg).
 
 format_rule_resp(Rules) when is_list(Rules) ->
     [format_rule_resp(R) || R <- Rules];
+format_rule_resp({Id, Rule}) ->
+    format_rule_resp(Rule#{id => Id});
 format_rule_resp(#{
     id := Id,
     name := Name,
@@ -508,6 +534,13 @@ aggregate_metrics(AllMetrics) ->
 get_one_rule(AllRules, Id) ->
     [R || R = #{id := Id0} <- AllRules, Id0 == Id].
 
+add_metadata(Params) ->
+    Params#{
+        <<"metadata">> => #{
+            <<"created_at">> => emqx_rule_engine:now_ms()
+        }
+    }.
+
 filter_out_request_body(Conf) ->
     ExtraConfs = [
         <<"id">>,
@@ -518,3 +551,51 @@ filter_out_request_body(Conf) ->
         <<"node">>
     ],
     maps:without(ExtraConfs, Conf).
+
+query(Tab, {Qs, Fuzzy}, Start, Limit) ->
+    Ms = qs2ms(),
+    FuzzyFun = fuzzy_match_fun(Qs, Ms, Fuzzy),
+    emqx_mgmt_api:select_table_with_count(
+        Tab, {Ms, FuzzyFun}, Start, Limit, fun format_rule_resp/1
+    ).
+
+%% rule is not a record, so everything is fuzzy filter.
+qs2ms() ->
+    [{'_', [], ['$_']}].
+
+fuzzy_match_fun(Qs, Ms, Fuzzy) ->
+    MsC = ets:match_spec_compile(Ms),
+    fun(Rows) ->
+        Ls = ets:match_spec_run(Rows, MsC),
+        lists:filter(
+            fun(E) ->
+                run_qs_match(E, Qs) andalso
+                    run_fuzzy_match(E, Fuzzy)
+            end,
+            Ls
+        )
+    end.
+
+run_qs_match(_, []) ->
+    true;
+run_qs_match(E = {_Id, #{enable := Enable}}, [{enable, '=:=', Pattern} | Qs]) ->
+    Enable =:= Pattern andalso run_qs_match(E, Qs);
+run_qs_match(E = {_Id, #{from := From}}, [{from, '=:=', Pattern} | Qs]) ->
+    lists:member(Pattern, From) andalso run_qs_match(E, Qs);
+run_qs_match(E, [_ | Qs]) ->
+    run_qs_match(E, Qs).
+
+run_fuzzy_match(_, []) ->
+    true;
+run_fuzzy_match(E = {Id, _}, [{id, like, Pattern} | Fuzzy]) ->
+    binary:match(Id, Pattern) /= nomatch andalso run_fuzzy_match(E, Fuzzy);
+run_fuzzy_match(E = {_Id, #{description := Desc}}, [{description, like, Pattern} | Fuzzy]) ->
+    binary:match(Desc, Pattern) /= nomatch andalso run_fuzzy_match(E, Fuzzy);
+run_fuzzy_match(E = {_Id, #{from := Topics}}, [{from, match, Pattern} | Fuzzy]) ->
+    lists:any(fun(For) -> emqx_topic:match(For, Pattern) end, Topics) andalso
+        run_fuzzy_match(E, Fuzzy);
+run_fuzzy_match(E = {_Id, #{from := Topics}}, [{from, like, Pattern} | Fuzzy]) ->
+    lists:any(fun(For) -> binary:match(For, Pattern) /= nomatch end, Topics) andalso
+        run_fuzzy_match(E, Fuzzy);
+run_fuzzy_match(E, [_ | Fuzzy]) ->
+    run_fuzzy_match(E, Fuzzy).

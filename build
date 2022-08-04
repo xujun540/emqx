@@ -57,6 +57,7 @@ if [ "${SYSTEM}" = 'windows' ]; then
     # windows does not like the find
     FIND="/usr/bin/find"
     TAR="/usr/bin/tar"
+    export BUILD_WITHOUT_ROCKSDB="on"
 else
     FIND='find'
     TAR='tar'
@@ -92,7 +93,7 @@ make_docs() {
     # shellcheck disable=SC2086
     erl -noshell -pa $libs_dir1 $libs_dir2 $libs_dir3 -eval \
         "Dir = filename:join([apps, emqx_dashboard, priv, www, static]), \
-         I18nFile = filename:join([apps, emqx_dashboard, etc, 'i18n.conf.all']), \
+         I18nFile = filename:join([apps, emqx_dashboard, priv, 'i18n.conf']), \
          ok = emqx_conf:dump_schema(Dir, $SCHEMA_MODULE, I18nFile), \
          halt(0)."
 }
@@ -133,8 +134,15 @@ make_relup() {
         local tmp_dir
         tmp_dir="$(mktemp -d -t emqx.XXXXXXX)"
         $TAR -C "$tmp_dir" -zxf "$tgzfile"
-        cp -npr "$tmp_dir/releases"/* "${rel_dir}/releases/" || true
-        cp -npr "$tmp_dir/lib"/* "${rel_dir}/lib/" || true
+        mkdir -p "${rel_dir}/releases/"
+        cp -npr "$tmp_dir/releases"/* "${rel_dir}/releases/"
+        ## There is for some reason a copy of the '$PROFILE.rel' file to releases dir,
+        ## the content is duplicated to releases/5.0.0/$PROFILE.rel.
+        ## This file seems to be useless, but yet confusing as it does not change after upgrade/downgrade
+        ## Hence we force delete this file.
+        rm -f "${rel_dir}/releases/${PROFILE}.rel"
+        mkdir -p "${rel_dir}/lib/"
+        cp -npr "$tmp_dir/lib"/* "${rel_dir}/lib/"
         rm -rf "$tmp_dir"
         releases+=( "$base_vsn" )
     done < <("$FIND" _upgrade_base -maxdepth 1 -name "${name_pattern}.tar.gz" -type f)
@@ -198,7 +206,7 @@ make_tgz() {
     fi
     $TAR zxf "${src_tarball}" -C "${tard}/emqx"
     if [ -f "${tard}/emqx/releases/${PKG_VSN}/relup" ]; then
-        ./scripts/inject-relup.escript "${tard}/emqx/releases/${PKG_VSN}/relup"
+        ./scripts/relup-build/inject-relup.escript "${tard}/emqx/releases/${PKG_VSN}/relup"
     fi
     ## try to be portable for tar.gz packages.
     ## for DEB and RPM packages the dependencies are resoved by yum and apt

@@ -88,22 +88,6 @@ fields(config) ->
                     desc => ?DESC("connect_timeout")
                 }
             )},
-        {max_retries,
-            sc(
-                non_neg_integer(),
-                #{
-                    default => 5,
-                    desc => ?DESC("max_retries")
-                }
-            )},
-        {retry_interval,
-            sc(
-                emqx_schema:duration(),
-                #{
-                    default => "1s",
-                    desc => ?DESC("retry_interval")
-                }
-            )},
         {pool_type,
             sc(
                 pool_type(),
@@ -147,6 +131,14 @@ fields("request") ->
         {path, hoconsc:mk(binary(), #{required => false, desc => ?DESC("path")})},
         {body, hoconsc:mk(binary(), #{required => false, desc => ?DESC("body")})},
         {headers, hoconsc:mk(map(), #{required => false, desc => ?DESC("headers")})},
+        {max_retries,
+            sc(
+                non_neg_integer(),
+                #{
+                    required => false,
+                    desc => ?DESC("max_retries")
+                }
+            )},
         {request_timeout,
             sc(
                 emqx_schema:duration_ms(),
@@ -182,8 +174,6 @@ on_start(
             path := BasePath
         },
         connect_timeout := ConnectTimeout,
-        max_retries := MaxRetries,
-        retry_interval := RetryInterval,
         pool_type := PoolType,
         pool_size := PoolSize
     } = Config
@@ -206,8 +196,6 @@ on_start(
         {host, Host},
         {port, Port},
         {connect_timeout, ConnectTimeout},
-        {retry, MaxRetries},
-        {retry_timeout, RetryInterval},
         {keepalive, 30000},
         {pool_type, PoolType},
         {pool_size, PoolSize},
@@ -247,17 +235,23 @@ on_query(InstId, {send_message, Msg}, AfterQuery, State) ->
                 path := Path,
                 body := Body,
                 headers := Headers,
-                request_timeout := Timeout
+                request_timeout := Timeout,
+                max_retries := Retry
             } = process_request(Request, Msg),
-            on_query(InstId, {Method, {Path, Headers, Body}, Timeout}, AfterQuery, State)
+            on_query(
+                InstId,
+                {undefined, Method, {Path, Headers, Body}, Timeout, Retry},
+                AfterQuery,
+                State
+            )
     end;
 on_query(InstId, {Method, Request}, AfterQuery, State) ->
-    on_query(InstId, {undefined, Method, Request, 5000}, AfterQuery, State);
+    on_query(InstId, {undefined, Method, Request, 5000, 2}, AfterQuery, State);
 on_query(InstId, {Method, Request, Timeout}, AfterQuery, State) ->
-    on_query(InstId, {undefined, Method, Request, Timeout}, AfterQuery, State);
+    on_query(InstId, {undefined, Method, Request, Timeout, 2}, AfterQuery, State);
 on_query(
     InstId,
-    {KeyOrNum, Method, Request, Timeout},
+    {KeyOrNum, Method, Request, Timeout, Retry},
     AfterQuery,
     #{pool_name := PoolName, base_path := BasePath} = State
 ) ->
@@ -275,7 +269,8 @@ on_query(
             end,
             Method,
             NRequest,
-            Timeout
+            Timeout,
+            Retry
         )
     of
         {error, Reason} ->
@@ -309,27 +304,42 @@ on_query(
     end,
     Result.
 
-on_get_status(_InstId, #{host := Host, port := Port, connect_timeout := Timeout} = State) ->
-    case do_get_status(Host, Port, Timeout) of
-        ok ->
+on_get_status(_InstId, #{pool_name := PoolName, connect_timeout := Timeout} = State) ->
+    case do_get_status(PoolName, Timeout) of
+        true ->
             connected;
-        {error, Reason} ->
+        false ->
             ?SLOG(error, #{
                 msg => "http_connector_get_status_failed",
-                reason => Reason,
-                host => Host,
-                port => Port
+                state => State
             }),
-            {disconnected, State, Reason}
+            disconnected
     end.
 
-do_get_status(Host, Port, Timeout) ->
-    case gen_tcp:connect(Host, Port, emqx_misc:ipv6_probe([]), Timeout) of
-        {ok, Sock} ->
-            gen_tcp:close(Sock),
-            ok;
-        {error, Reason} ->
-            {error, Reason}
+do_get_status(PoolName, Timeout) ->
+    Workers = [Worker || {_WorkerName, Worker} <- ehttpc:workers(PoolName)],
+    DoPerWorker =
+        fun(Worker) ->
+            case ehttpc:health_check(Worker, Timeout) of
+                ok ->
+                    true;
+                {error, Reason} ->
+                    ?SLOG(error, #{
+                        msg => "ehttpc_health_check_failed",
+                        reason => Reason,
+                        worker => Worker
+                    }),
+                    false
+            end
+        end,
+    try emqx_misc:pmap(DoPerWorker, Workers, Timeout) of
+        [_ | _] = Status ->
+            lists:all(fun(St) -> St =:= true end, Status);
+        [] ->
+            false
+    catch
+        exit:timeout ->
+            false
     end.
 
 %%--------------------------------------------------------------------
@@ -353,7 +363,8 @@ preprocess_request(
         path => emqx_plugin_libs_rule:preproc_tmpl(Path),
         body => emqx_plugin_libs_rule:preproc_tmpl(Body),
         headers => preproc_headers(Headers),
-        request_timeout => maps:get(request_timeout, Req, 30000)
+        request_timeout => maps:get(request_timeout, Req, 30000),
+        max_retries => maps:get(max_retries, Req, 2)
     }.
 
 preproc_headers(Headers) when is_map(Headers) ->

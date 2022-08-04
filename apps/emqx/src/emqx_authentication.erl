@@ -25,7 +25,7 @@
 -include("emqx.hrl").
 -include("logger.hrl").
 -include("emqx_authentication.hrl").
-
+-include_lib("emqx/include/emqx_hooks.hrl").
 -include_lib("stdlib/include/ms_transform.hrl").
 
 -define(CONF_ROOT, ?EMQX_AUTHENTICATION_CONFIG_ROOT_NAME_ATOM).
@@ -100,6 +100,14 @@
 -endif.
 
 -define(CHAINS_TAB, emqx_authn_chains).
+
+-define(TRACE_RESULT(Label, Result, Reason), begin
+    ?TRACE_AUTHN(Label, #{
+        result => (Result),
+        reason => (Reason)
+    }),
+    Result
+end).
 
 -type chain_name() :: atom().
 -type authenticator_id() :: binary().
@@ -214,17 +222,32 @@ when
 %% Authenticate
 %%------------------------------------------------------------------------------
 
+authenticate(#{enable_authn := false}, _AuthResult) ->
+    inc_authenticate_metric('authentication.success.anonymous'),
+    ?TRACE_RESULT("authentication_result", ignore, enable_authn_false);
 authenticate(#{listener := Listener, protocol := Protocol} = Credential, _AuthResult) ->
     case get_authenticators(Listener, global_chain(Protocol)) of
         {ok, ChainName, Authenticators} ->
             case get_enabled(Authenticators) of
                 [] ->
-                    ignore;
+                    inc_authenticate_metric('authentication.success.anonymous'),
+                    ?TRACE_RESULT("authentication_result", ignore, empty_chain);
                 NAuthenticators ->
-                    do_authenticate(ChainName, NAuthenticators, Credential)
+                    Result = do_authenticate(ChainName, NAuthenticators, Credential),
+
+                    case Result of
+                        {stop, {ok, _}} ->
+                            inc_authenticate_metric('authentication.success');
+                        {stop, {error, _}} ->
+                            inc_authenticate_metric('authentication.failure');
+                        _ ->
+                            ok
+                    end,
+                    ?TRACE_RESULT("authentication_result", Result, chain_result)
             end;
         none ->
-            ignore
+            inc_authenticate_metric('authentication.success.anonymous'),
+            ?TRACE_RESULT("authentication_result", ignore, no_chain)
     end.
 
 get_authenticators(Listener, Global) ->
@@ -611,11 +634,11 @@ handle_create_authenticator(Chain, Config, Providers) ->
 do_authenticate(_ChainName, [], _) ->
     {stop, {error, not_authorized}};
 do_authenticate(
-    ChainName, [#authenticator{id = ID, provider = Provider, state = State} | More], Credential
+    ChainName, [#authenticator{id = ID} = Authenticator | More], Credential
 ) ->
     MetricsID = metrics_id(ChainName, ID),
     emqx_metrics_worker:inc(authn_metrics, MetricsID, total),
-    try Provider:authenticate(Credential, State) of
+    try authenticate_with_provider(Authenticator, Credential) of
         ignore ->
             ok = emqx_metrics_worker:inc(authn_metrics, MetricsID, nomatch),
             do_authenticate(ChainName, More, Credential);
@@ -636,8 +659,7 @@ do_authenticate(
             {stop, Result}
     catch
         Class:Reason:Stacktrace ->
-            ?SLOG(warning, #{
-                msg => "unexpected_error_in_authentication",
+            ?TRACE_AUTHN(warning, "authenticator_error", #{
                 exception => Class,
                 reason => Reason,
                 stacktrace => Stacktrace,
@@ -646,6 +668,14 @@ do_authenticate(
             emqx_metrics_worker:inc(authn_metrics, MetricsID, nomatch),
             do_authenticate(ChainName, More, Credential)
     end.
+
+authenticate_with_provider(#authenticator{id = ID, provider = Provider, state = State}, Credential) ->
+    AuthnResult = Provider:authenticate(Credential, State),
+    ?TRACE_AUTHN("authenticator_result", #{
+        authenticator => ID,
+        result => AuthnResult
+    }),
+    AuthnResult.
 
 reply(Reply, State) ->
     {reply, Reply, State}.
@@ -696,7 +726,7 @@ maybe_hook(#{hooked := false} = State) ->
         )
     of
         true ->
-            _ = emqx:hook('client.authenticate', {?MODULE, authenticate, []}),
+            ok = emqx_hooks:put('client.authenticate', {?MODULE, authenticate, []}, ?HP_AUTHN),
             State#{hooked => true};
         false ->
             State
@@ -715,7 +745,7 @@ maybe_unhook(#{hooked := true} = State) ->
         )
     of
         true ->
-            _ = emqx:unhook('client.authenticate', {?MODULE, authenticate, []}),
+            ok = emqx_hooks:del('client.authenticate', {?MODULE, authenticate, []}),
             State#{hooked => false};
         false ->
             State
@@ -900,3 +930,9 @@ to_list(M) when is_map(M) -> [M];
 to_list(L) when is_list(L) -> L.
 
 call(Call) -> gen_server:call(?MODULE, Call, infinity).
+
+inc_authenticate_metric('authentication.success.anonymous' = Metric) ->
+    emqx_metrics:inc(Metric),
+    emqx_metrics:inc('authentication.success');
+inc_authenticate_metric(Metric) ->
+    emqx_metrics:inc(Metric).

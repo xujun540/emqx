@@ -34,42 +34,54 @@
     render_sql_params/2
 ]).
 
-%%------------------------------------------------------------------------------
+-export([
+    parse_http_resp_body/2,
+    content_type/1
+]).
+
+-define(DEFAULT_RESOURCE_OPTS, #{
+    auto_retry_interval => 6000,
+    start_after_created => false
+}).
+
+%%--------------------------------------------------------------------
 %% APIs
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 create_resource(Module, Config) ->
     ResourceId = make_resource_id(Module),
     create_resource(ResourceId, Module, Config).
 
 create_resource(ResourceId, Module, Config) ->
-    {ok, _Data} = emqx_resource:create_local(
+    Result = emqx_resource:create_local(
         ResourceId,
         ?RESOURCE_GROUP,
         Module,
         Config,
-        #{}
-    ).
+        ?DEFAULT_RESOURCE_OPTS
+    ),
+    start_resource_if_enabled(Result, ResourceId, Config).
 
-update_resource(Module, #{annotations := #{id := ResourceId}} = Source) ->
+update_resource(Module, #{annotations := #{id := ResourceId}} = Config) ->
     Result =
         case
             emqx_resource:recreate_local(
                 ResourceId,
                 Module,
-                Source
+                Config,
+                ?DEFAULT_RESOURCE_OPTS
             )
         of
             {ok, _} -> {ok, ResourceId};
             {error, Reason} -> {error, Reason}
         end,
-    case Source of
-        #{enable := true} ->
-            Result;
-        #{enable := false} ->
-            ok = emqx_resource:stop(ResourceId),
-            Result
-    end.
+    start_resource_if_enabled(Result, ResourceId, Config).
+
+start_resource_if_enabled({ok, _} = Result, ResourceId, #{enable := true}) ->
+    _ = emqx_resource:start(ResourceId),
+    Result;
+start_resource_if_enabled(Result, _ResourceId, _Config) ->
+    Result.
 
 cleanup_resources() ->
     lists:foreach(
@@ -123,9 +135,38 @@ render_sql_params(ParamList, Values) ->
         #{return => rawlist, var_trans => fun handle_sql_var/2}
     ).
 
-%%------------------------------------------------------------------------------
+-spec parse_http_resp_body(binary(), binary()) -> allow | deny | ignore | error.
+parse_http_resp_body(<<"application/x-www-form-urlencoded", _/binary>>, Body) ->
+    try
+        result(maps:from_list(cow_qs:parse_qs(Body)))
+    catch
+        _:_ -> error
+    end;
+parse_http_resp_body(<<"application/json", _/binary>>, Body) ->
+    try
+        result(emqx_json:decode(Body, [return_maps]))
+    catch
+        _:_ -> error
+    end.
+
+result(#{<<"result">> := <<"allow">>}) -> allow;
+result(#{<<"result">> := <<"deny">>}) -> deny;
+result(#{<<"result">> := <<"ignore">>}) -> ignore;
+result(_) -> error.
+
+-spec content_type(cow_http:headers()) -> binary().
+content_type(Headers) when is_list(Headers) ->
+    %% header name is lower case, see:
+    %% https://github.com/ninenines/cowlib/blob/ce6798c6b2e95b6a34c6a76d2489eaf159827d80/src/cow_http.erl#L192
+    proplists:get_value(
+        <<"content-type">>,
+        Headers,
+        <<"application/json">>
+    ).
+
+%%--------------------------------------------------------------------
 %% Internal functions
-%%------------------------------------------------------------------------------
+%%--------------------------------------------------------------------
 
 client_vars(ClientInfo) ->
     maps:from_list(

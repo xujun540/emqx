@@ -273,7 +273,7 @@ check_origin_header(Req, #{listener := {Type, Listener}} = Opts) ->
     end.
 
 websocket_init([Req, Opts]) ->
-    #{zone := Zone, limiter := LimiterCfg, listener := {Type, Listener}} = Opts,
+    #{zone := Zone, limiter := LimiterCfg, listener := {Type, Listener} = ListenerCfg} = Opts,
     case check_max_connection(Type, Listener) of
         allow ->
             {Peername, PeerCert} = get_peer_info(Type, Listener, Req, Opts),
@@ -287,8 +287,10 @@ websocket_init([Req, Opts]) ->
                 ws_cookie => WsCookie,
                 conn_mod => ?MODULE
             },
-            Limiter = emqx_limiter_container:get_limiter_by_names(
-                [?LIMITER_BYTES_IN, ?LIMITER_MESSAGE_IN], LimiterCfg
+            Limiter = emqx_limiter_container:get_limiter_by_types(
+                ListenerCfg,
+                [?LIMITER_BYTES_IN, ?LIMITER_MESSAGE_IN],
+                LimiterCfg
             ),
             MQTTPiggyback = get_ws_opts(Type, Listener, mqtt_piggyback),
             FrameOpts = #{
@@ -487,9 +489,6 @@ handle_call(From, info, State) ->
 handle_call(From, stats, State) ->
     gen_server:reply(From, stats(State)),
     return(State);
-handle_call(_From, {ratelimit, Type, Bucket}, State = #state{limiter = Limiter}) ->
-    Limiter2 = emqx_limiter_container:update_by_name(Type, Bucket, Limiter),
-    {reply, ok, State#state{limiter = Limiter2}};
 handle_call(From, Req, State = #state{channel = Channel}) ->
     case emqx_channel:handle_call(Req, Channel) of
         {reply, Reply, NChannel} ->
@@ -586,7 +585,7 @@ check_limiter(
                 {ok, Limiter2} ->
                     WhenOk(Data, Msgs, State#state{limiter = Limiter2});
                 {pause, Time, Limiter2} ->
-                    ?SLOG(warning, #{
+                    ?SLOG(debug, #{
                         msg => "pause_time_due_to_rate_limit",
                         needs => Needs,
                         time_in_ms => Time
@@ -634,7 +633,7 @@ retry_limiter(#state{limiter = Limiter} = State) ->
                 }
             );
         {pause, Time, Limiter2} ->
-            ?SLOG(warning, #{
+            ?SLOG(debug, #{
                 msg => "pause_time_due_to_rate_limit",
                 types => Types,
                 time_in_ms => Time
@@ -981,9 +980,8 @@ trigger(Event) -> erlang:send(self(), Event).
 
 get_peer(Req, #{listener := {Type, Listener}}) ->
     {PeerAddr, PeerPort} = cowboy_req:peer(Req),
-    AddrHeader = cowboy_req:header(
-        get_ws_opts(Type, Listener, proxy_address_header), Req, <<>>
-    ),
+    AddrHeaderName = get_ws_header_opts(Type, Listener, proxy_address_header),
+    AddrHeader = cowboy_req:header(AddrHeaderName, Req, <<>>),
     ClientAddr =
         case string:tokens(binary_to_list(AddrHeader), ", ") of
             [] ->
@@ -998,9 +996,8 @@ get_peer(Req, #{listener := {Type, Listener}}) ->
             _ ->
                 PeerAddr
         end,
-    PortHeader = cowboy_req:header(
-        get_ws_opts(Type, Listener, proxy_port_header), Req, <<>>
-    ),
+    PortHeaderName = get_ws_header_opts(Type, Listener, proxy_port_header),
+    PortHeader = cowboy_req:header(PortHeaderName, Req, <<>>),
     ClientPort =
         case string:tokens(binary_to_list(PortHeader), ", ") of
             [] ->
@@ -1041,6 +1038,10 @@ check_max_connection(Type, Listener) ->
 set_field(Name, Value, State) ->
     Pos = emqx_misc:index_of(Name, record_info(fields, state)),
     setelement(Pos + 1, State, Value).
+
+%% ensure lowercase letters in headers
+get_ws_header_opts(Type, Listener, Key) ->
+    iolist_to_binary(string:lowercase(get_ws_opts(Type, Listener, Key))).
 
 get_ws_opts(Type, Listener, Key) ->
     emqx_config:get_listener_conf(Type, Listener, [websocket, Key]).

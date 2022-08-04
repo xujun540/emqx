@@ -19,6 +19,7 @@
 
 -include("emqx_authz.hrl").
 -include_lib("emqx/include/logger.hrl").
+-include_lib("emqx/include/emqx_hooks.hrl").
 
 -ifdef(TEST).
 -compile(export_all).
@@ -52,11 +53,12 @@
 
 -type sources() :: [source()].
 
--define(METRIC_ALLOW, 'client.authorization.matched.allow').
--define(METRIC_DENY, 'client.authorization.matched.deny').
--define(METRIC_NOMATCH, 'client.authorization.nomatch').
+-define(METRIC_SUPERUSER, 'authorization.superuser').
+-define(METRIC_ALLOW, 'authorization.matched.allow').
+-define(METRIC_DENY, 'authorization.matched.deny').
+-define(METRIC_NOMATCH, 'authorization.nomatch').
 
--define(METRICS, [?METRIC_ALLOW, ?METRIC_DENY, ?METRIC_NOMATCH]).
+-define(METRICS, [?METRIC_SUPERUSER, ?METRIC_ALLOW, ?METRIC_DENY, ?METRIC_NOMATCH]).
 
 -define(IS_ENABLED(Enable), ((Enable =:= true) or (Enable =:= <<"true">>))).
 
@@ -100,7 +102,7 @@ init() ->
     Sources = emqx_conf:get(?CONF_KEY_PATH, []),
     ok = check_dup_types(Sources),
     NSources = create_sources(Sources),
-    ok = emqx_hooks:add('client.authorize', {?MODULE, authorize, [NSources]}, -1).
+    ok = emqx_hooks:put('client.authorize', {?MODULE, authorize, [NSources]}, ?HP_AUTHZ).
 
 deinit() ->
     ok = emqx_hooks:del('client.authorize', {?MODULE, authorize}),
@@ -308,14 +310,37 @@ authorize(
     DefaultResult,
     Sources
 ) ->
+    case maps:get(is_superuser, Client, false) of
+        true ->
+            log_allowed(#{
+                username => Username,
+                ipaddr => IpAddress,
+                topic => Topic,
+                is_superuser => true
+            }),
+            emqx_metrics:inc(?METRIC_SUPERUSER),
+            {stop, allow};
+        false ->
+            authorize_non_superuser(Client, PubSub, Topic, DefaultResult, Sources)
+    end.
+
+authorize_non_superuser(
+    #{
+        username := Username,
+        peerhost := IpAddress
+    } = Client,
+    PubSub,
+    Topic,
+    DefaultResult,
+    Sources
+) ->
     case do_authorize(Client, PubSub, Topic, sources_with_defaults(Sources)) of
         {{matched, allow}, AuthzSource} ->
             emqx:run_hook(
                 'client.check_authz_complete',
                 [Client, PubSub, Topic, allow, AuthzSource]
             ),
-            ?SLOG(info, #{
-                msg => "authorization_permission_allowed",
+            log_allowed(#{
                 username => Username,
                 ipaddr => IpAddress,
                 topic => Topic,
@@ -354,6 +379,9 @@ authorize(
             emqx_metrics:inc(?METRIC_NOMATCH),
             {stop, DefaultResult}
     end.
+
+log_allowed(Meta) ->
+    ?SLOG(info, Meta#{msg => "authorization_permission_allowed"}).
 
 do_authorize(_Client, _PubSub, _Topic, []) ->
     nomatch;
@@ -501,7 +529,7 @@ get_source_by_type(Type, Sources) ->
 
 %% @doc put hook with (maybe) initialized new source and old sources
 update_authz_chain(Actions) ->
-    emqx_hooks:put('client.authorize', {?MODULE, authorize, [Actions]}, -1).
+    emqx_hooks:put('client.authorize', {?MODULE, authorize, [Actions]}, ?HP_AUTHZ).
 
 check_acl_file_rules(RawRules) ->
     %% TODO: make sure the bin rules checked

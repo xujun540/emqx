@@ -101,10 +101,10 @@ t_create_invalid(_Config) ->
 
     InvalidConfigs =
         [
-            maps:without([server], AuthConfig),
-            AuthConfig#{server => <<"unknownhost:3333">>},
-            AuthConfig#{password => <<"wrongpass">>},
-            AuthConfig#{database => <<"wrongdatabase">>}
+            maps:without([<<"server">>], AuthConfig),
+            AuthConfig#{<<"server">> => <<"unknownhost:3333">>},
+            AuthConfig#{<<"password">> => <<"wrongpass">>},
+            AuthConfig#{<<"database">> => <<"wrongdatabase">>}
         ],
 
     lists:foreach(
@@ -195,7 +195,7 @@ t_update(_Config) ->
     CorrectConfig = raw_pgsql_auth_config(),
     IncorrectConfig =
         CorrectConfig#{
-            query =>
+            <<"query">> =>
                 <<
                     "SELECT password_hash, salt, is_superuser_str as is_superuser\n"
                     "                          FROM users where username = ${username} LIMIT 0"
@@ -243,7 +243,7 @@ t_is_superuser(_Config) ->
         {is_superuser_str, "", false},
         {is_superuser_str, null, false},
         {is_superuser_str, "1", true},
-        {is_superuser_str, "val", true},
+        {is_superuser_str, "val", false},
 
         {is_superuser_int, 0, false},
         {is_superuser_int, null, false},
@@ -274,7 +274,7 @@ test_is_superuser({Field, Value, ExpectedValue}) ->
             " as is_superuser "
             "FROM users where username = ${username} LIMIT 1",
 
-    Config = maps:put(query, Query, raw_pgsql_auth_config()),
+    Config = maps:put(<<"query">>, Query, raw_pgsql_auth_config()),
     {ok, _} = emqx:update_config(
         ?PATH,
         {update_authenticator, ?GLOBAL, <<"password_based:postgresql">>, Config}
@@ -298,24 +298,24 @@ test_is_superuser({Field, Value, ExpectedValue}) ->
 
 raw_pgsql_auth_config() ->
     #{
-        mechanism => <<"password_based">>,
-        password_hash_algorithm => #{
-            name => <<"plain">>,
-            salt_position => <<"suffix">>
+        <<"mechanism">> => <<"password_based">>,
+        <<"password_hash_algorithm">> => #{
+            <<"name">> => <<"plain">>,
+            <<"salt_position">> => <<"suffix">>
         },
-        enable => <<"true">>,
+        <<"enable">> => <<"true">>,
 
-        backend => <<"postgresql">>,
-        database => <<"mqtt">>,
-        username => <<"root">>,
-        password => <<"public">>,
+        <<"backend">> => <<"postgresql">>,
+        <<"database">> => <<"mqtt">>,
+        <<"username">> => <<"root">>,
+        <<"password">> => <<"public">>,
 
-        query =>
+        <<"query">> =>
             <<
                 "SELECT password_hash, salt, is_superuser_str as is_superuser\n"
                 "                      FROM users where username = ${username} LIMIT 1"
             >>,
-        server => pgsql_server()
+        <<"server">> => pgsql_server()
     }.
 
 user_seeds() ->
@@ -347,9 +347,9 @@ user_seeds() ->
                 password => <<"md5">>
             },
             config_params => #{
-                password_hash_algorithm => #{
-                    name => <<"md5">>,
-                    salt_position => <<"suffix">>
+                <<"password_hash_algorithm">> => #{
+                    <<"name">> => <<"md5">>,
+                    <<"salt_position">> => <<"suffix">>
                 }
             },
             result => {ok, #{is_superuser => false}}
@@ -367,14 +367,44 @@ user_seeds() ->
                 password => <<"sha256">>
             },
             config_params => #{
-                query =>
+                <<"query">> =>
                     <<
                         "SELECT password_hash, salt, is_superuser_int as is_superuser\n"
                         "                            FROM users where username = ${clientid} LIMIT 1"
                     >>,
-                password_hash_algorithm => #{
-                    name => <<"sha256">>,
-                    salt_position => <<"prefix">>
+                <<"password_hash_algorithm">> => #{
+                    <<"name">> => <<"sha256">>,
+                    <<"salt_position">> => <<"prefix">>
+                }
+            },
+            result => {ok, #{is_superuser => true}}
+        },
+
+        #{
+            data => #{
+                username => "sha256",
+                password_hash => "ac63a624e7074776d677dd61a003b8c803eb11db004d0ec6ae032a5d7c9c5caf",
+                cert_subject => <<"cert_subject_data">>,
+                cert_common_name => <<"cert_common_name_data">>,
+                salt => "salt",
+                is_superuser_int => 1
+            },
+            credentials => #{
+                clientid => <<"sha256">>,
+                password => <<"sha256">>,
+                cert_subject => <<"cert_subject_data">>,
+                cert_common_name => <<"cert_common_name_data">>
+            },
+            config_params => #{
+                <<"query">> =>
+                    <<
+                        "SELECT password_hash, salt, is_superuser_int as is_superuser\n"
+                        "      FROM users where cert_subject = ${cert_subject} AND \n"
+                        "                       cert_common_name = ${cert_common_name} LIMIT 1"
+                    >>,
+                <<"password_hash_algorithm">> => #{
+                    <<"name">> => <<"sha256">>,
+                    <<"salt_position">> => <<"prefix">>
                 }
             },
             result => {ok, #{is_superuser => true}}
@@ -392,12 +422,12 @@ user_seeds() ->
                 password => <<"bcrypt">>
             },
             config_params => #{
-                query =>
+                <<"query">> =>
                     <<
                         "SELECT password_hash, salt, is_superuser_int as is_superuser\n"
                         "                            FROM users where username = ${username} LIMIT 1"
                     >>,
-                password_hash_algorithm => #{name => <<"bcrypt">>}
+                <<"password_hash_algorithm">> => #{<<"name">> => <<"bcrypt">>}
             },
             result => {ok, #{is_superuser => false}}
         },
@@ -415,12 +445,12 @@ user_seeds() ->
             },
             config_params => #{
                 % clientid variable & username credentials
-                query =>
+                <<"query">> =>
                     <<
                         "SELECT password_hash, salt, is_superuser_int as is_superuser\n"
                         "                            FROM users where username = ${clientid} LIMIT 1"
                     >>,
-                password_hash_algorithm => #{name => <<"bcrypt">>}
+                <<"password_hash_algorithm">> => #{<<"name">> => <<"bcrypt">>}
             },
             result => {error, not_authorized}
         },
@@ -438,12 +468,12 @@ user_seeds() ->
             },
             config_params => #{
                 % Bad keys in query
-                query =>
+                <<"query">> =>
                     <<
                         "SELECT 1 AS unknown_field\n"
                         "                            FROM users where username = ${username} LIMIT 1"
                     >>,
-                password_hash_algorithm => #{name => <<"bcrypt">>}
+                <<"password_hash_algorithm">> => #{<<"name">> => <<"bcrypt">>}
             },
             result => {error, not_authorized}
         },
@@ -461,7 +491,7 @@ user_seeds() ->
                 password => <<"wrongpass">>
             },
             config_params => #{
-                password_hash_algorithm => #{name => <<"bcrypt">>}
+                <<"password_hash_algorithm">> => #{<<"name">> => <<"bcrypt">>}
             },
             result => {error, bad_username_or_password}
         }
@@ -474,6 +504,8 @@ init_seeds() ->
         "                       username varchar(255),\n"
         "                       password_hash varchar(255),\n"
         "                       salt varchar(255),\n"
+        "                       cert_subject varchar(255),\n"
+        "                       cert_common_name varchar(255),\n"
         "                       is_superuser_str varchar(255),\n"
         "                       is_superuser_int smallint,\n"
         "                       is_superuser_bool boolean)"
@@ -487,12 +519,21 @@ init_seeds() ->
     ).
 
 create_user(Values) ->
-    Fields = [username, password_hash, salt, is_superuser_str, is_superuser_int, is_superuser_bool],
+    Fields = [
+        username,
+        password_hash,
+        salt,
+        cert_subject,
+        cert_common_name,
+        is_superuser_str,
+        is_superuser_int,
+        is_superuser_bool
+    ],
 
     InsertQuery =
-        "INSERT INTO users(username, password_hash, salt,"
+        "INSERT INTO users(username, password_hash, salt, cert_subject, cert_common_name, "
         "is_superuser_str, is_superuser_int, is_superuser_bool) "
-        "VALUES($1, $2, $3, $4, $5, $6)",
+        "VALUES($1, $2, $3, $4, $5, $6, $7, $8)",
 
     Params = [maps:get(F, Values, null) || F <- Fields],
     {ok, 1} = q(InsertQuery, Params),

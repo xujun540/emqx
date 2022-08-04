@@ -181,24 +181,11 @@ do_convert_listener(GwName, LType, Conf) ->
 
 do_convert_listener2(GwName, LType, LName, LConf) ->
     ListenerId = emqx_gateway_utils:listener_id(GwName, LType, LName),
-    Running = emqx_gateway_utils:is_running(ListenerId, LConf),
-    bind2str(
-        LConf#{
-            id => ListenerId,
-            type => LType,
-            name => LName,
-            running => Running
-        }
-    ).
-
-bind2str(LConf = #{bind := Bind}) when is_integer(Bind) ->
-    maps:put(bind, integer_to_binary(Bind), LConf);
-bind2str(LConf = #{<<"bind">> := Bind}) when is_integer(Bind) ->
-    maps:put(<<"bind">>, integer_to_binary(Bind), LConf);
-bind2str(LConf = #{bind := Bind}) when is_binary(Bind) ->
-    LConf;
-bind2str(LConf = #{<<"bind">> := Bind}) when is_binary(Bind) ->
-    LConf.
+    LConf#{
+        id => ListenerId,
+        type => LType,
+        name => LName
+    }.
 
 get_bind(#{bind := Bind}) ->
     emqx_gateway_utils:parse_listenon(Bind);
@@ -503,9 +490,8 @@ pre_config_update(_, {update_authn, GwName, Conf}, RawConf) ->
     of
         undefined ->
             badres_authn(not_found, GwName);
-        Authn ->
-            NAuthn = maps:merge(Authn, Conf),
-            {ok, emqx_map_lib:deep_put([GwName, ?AUTHN_BIN], RawConf, NAuthn)}
+        _Authn ->
+            {ok, emqx_map_lib:deep_put([GwName, ?AUTHN_BIN], RawConf, Conf)}
     end;
 pre_config_update(_, {update_authn, GwName, {LType, LName}, Conf}, RawConf) ->
     case
@@ -521,10 +507,10 @@ pre_config_update(_, {update_authn, GwName, {LType, LName}, Conf}, RawConf) ->
             case maps:get(?AUTHN_BIN, Listener, undefined) of
                 undefined ->
                     badres_listener_authn(not_found, GwName, LType, LName);
-                Auth ->
+                _Auth ->
                     NListener = maps:put(
                         ?AUTHN_BIN,
-                        maps:merge(Auth, Conf),
+                        Conf,
                         Listener
                     ),
                     {ok,

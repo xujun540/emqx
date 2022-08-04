@@ -75,26 +75,11 @@ fields('jwks') ->
         {pool_size, fun emqx_connector_schema_lib:pool_size/1},
         {refresh_interval, fun refresh_interval/1},
         {ssl, #{
-            type => hoconsc:union([
-                hoconsc:ref(?MODULE, ssl_enable),
-                hoconsc:ref(?MODULE, ssl_disable)
-            ]),
-            desc => ?DESC(ssl),
+            type => hoconsc:ref(emqx_schema, "ssl_client_opts"),
             default => #{<<"enable">> => false},
-            required => false
+            desc => ?DESC("ssl")
         }}
-    ] ++ common_fields();
-fields(ssl_enable) ->
-    [
-        {enable, #{type => true, desc => ?DESC(enable)}},
-        {cacertfile, fun cacertfile/1},
-        {certfile, fun certfile/1},
-        {keyfile, fun keyfile/1},
-        {verify, fun verify/1},
-        {server_name_indication, fun server_name_indication/1}
-    ];
-fields(ssl_disable) ->
-    [{enable, #{type => false, desc => ?DESC(enable)}}].
+    ] ++ common_fields().
 
 desc('hmac-based') ->
     ?DESC('hmac-based');
@@ -117,7 +102,8 @@ common_fields() ->
             default => <<"acl">>,
             desc => ?DESC(acl_claim_name)
         }},
-        {verify_claims, fun verify_claims/1}
+        {verify_claims, fun verify_claims/1},
+        {from, fun from/1}
     ] ++ emqx_authn_schema:common_fields().
 
 secret(type) -> binary();
@@ -146,27 +132,6 @@ refresh_interval(default) -> 300;
 refresh_interval(validator) -> [fun(I) -> I > 0 end];
 refresh_interval(_) -> undefined.
 
-cacertfile(type) -> string();
-cacertfile(desc) -> ?DESC(?FUNCTION_NAME);
-cacertfile(_) -> undefined.
-
-certfile(type) -> string();
-certfile(desc) -> ?DESC(?FUNCTION_NAME);
-certfile(_) -> undefined.
-
-keyfile(type) -> string();
-keyfile(desc) -> ?DESC(?FUNCTION_NAME);
-keyfile(_) -> undefined.
-
-verify(type) -> hoconsc:enum([verify_peer, verify_none]);
-verify(desc) -> ?DESC(?FUNCTION_NAME);
-verify(default) -> verify_none;
-verify(_) -> undefined.
-
-server_name_indication(type) -> string();
-server_name_indication(desc) -> ?DESC(?FUNCTION_NAME);
-server_name_indication(_) -> undefined.
-
 verify_claims(type) ->
     list();
 verify_claims(desc) ->
@@ -183,6 +148,11 @@ verify_claims(required) ->
     false;
 verify_claims(_) ->
     undefined.
+
+from(type) -> hoconsc:enum([username, password]);
+from(desc) -> ?DESC(?FUNCTION_NAME);
+from(default) -> password;
+from(_) -> undefined.
 
 %%------------------------------------------------------------------------------
 %% APIs
@@ -234,33 +204,36 @@ update(#{use_jwks := true} = Config, _State) ->
 authenticate(#{auth_method := _}, _) ->
     ignore;
 authenticate(
-    Credential = #{password := JWT},
+    Credential,
     #{
         verify_claims := VerifyClaims0,
         jwk := JWK,
-        acl_claim_name := AclClaimName
+        acl_claim_name := AclClaimName,
+        from := From
     }
 ) ->
+    JWT = maps:get(From, Credential),
     JWKs = [JWK],
     VerifyClaims = replace_placeholder(VerifyClaims0, Credential),
     verify(JWT, JWKs, VerifyClaims, AclClaimName);
 authenticate(
-    Credential = #{password := JWT},
+    Credential,
     #{
         verify_claims := VerifyClaims0,
         jwk_resource := ResourceId,
-        acl_claim_name := AclClaimName
+        acl_claim_name := AclClaimName,
+        from := From
     }
 ) ->
     case emqx_resource:query(ResourceId, get_jwks) of
         {error, Reason} ->
-            ?SLOG(error, #{
-                msg => "get_jwks_failed",
+            ?TRACE_AUTHN_PROVIDER(error, "get_jwks_failed", #{
                 resource => ResourceId,
                 reason => Reason
             }),
             ignore;
         {ok, JWKs} ->
+            JWT = maps:get(From, Credential),
             VerifyClaims = replace_placeholder(VerifyClaims0, Credential),
             verify(JWT, JWKs, VerifyClaims, AclClaimName)
     end.
@@ -281,7 +254,8 @@ create2(#{
     secret := Secret0,
     secret_base64_encoded := Base64Encoded,
     verify_claims := VerifyClaims,
-    acl_claim_name := AclClaimName
+    acl_claim_name := AclClaimName,
+    from := From
 }) ->
     case may_decode_secret(Base64Encoded, Secret0) of
         {error, Reason} ->
@@ -291,7 +265,8 @@ create2(#{
             {ok, #{
                 jwk => JWK,
                 verify_claims => VerifyClaims,
-                acl_claim_name => AclClaimName
+                acl_claim_name => AclClaimName,
+                from => From
             }}
     end;
 create2(#{
@@ -299,19 +274,22 @@ create2(#{
     algorithm := 'public-key',
     public_key := PublicKey,
     verify_claims := VerifyClaims,
-    acl_claim_name := AclClaimName
+    acl_claim_name := AclClaimName,
+    from := From
 }) ->
     JWK = create_jwk_from_public_key(PublicKey),
     {ok, #{
         jwk => JWK,
         verify_claims => VerifyClaims,
-        acl_claim_name => AclClaimName
+        acl_claim_name => AclClaimName,
+        from => From
     }};
 create2(
     #{
         use_jwks := true,
         verify_claims := VerifyClaims,
-        acl_claim_name := AclClaimName
+        acl_claim_name := AclClaimName,
+        from := From
     } = Config
 ) ->
     ResourceId = emqx_authn_utils:make_resource_id(?MODULE),
@@ -324,7 +302,8 @@ create2(
     {ok, #{
         jwk_resource => ResourceId,
         verify_claims => VerifyClaims,
-        acl_claim_name => AclClaimName
+        acl_claim_name => AclClaimName,
+        from => From
     }}.
 
 create_jwk_from_public_key(PublicKey) when
@@ -366,12 +345,21 @@ replace_placeholder([{Name, {placeholder, PL}} | More], Variables, Acc) ->
 replace_placeholder([{Name, Value} | More], Variables, Acc) ->
     replace_placeholder(More, Variables, [{Name, Value} | Acc]).
 
+verify(undefined, _, _, _) ->
+    ignore;
 verify(JWT, JWKs, VerifyClaims, AclClaimName) ->
     case do_verify(JWT, JWKs, VerifyClaims) of
-        {ok, Extra} -> {ok, acl(Extra, AclClaimName)};
-        {error, {missing_claim, _}} -> {error, bad_username_or_password};
-        {error, invalid_signature} -> ignore;
-        {error, {claims, _}} -> {error, bad_username_or_password}
+        {ok, Extra} ->
+            {ok, acl(Extra, AclClaimName)};
+        {error, {missing_claim, Claim}} ->
+            ?TRACE_AUTHN_PROVIDER("missing_jwt_claim", #{jwt => JWT, claim => Claim}),
+            {error, bad_username_or_password};
+        {error, invalid_signature} ->
+            ?TRACE_AUTHN_PROVIDER("invalid_jwt_signature", #{jwks => JWKs, jwt => JWT}),
+            ignore;
+        {error, {claims, Claims}} ->
+            ?TRACE_AUTHN_PROVIDER("invalid_jwt_claims", #{jwt => JWT, claims => Claims}),
+            {error, bad_username_or_password}
     end.
 
 acl(Claims, AclClaimName) ->
@@ -389,11 +377,11 @@ acl(Claims, AclClaimName) ->
         end,
     maps:merge(emqx_authn_utils:is_superuser(Claims), Acl).
 
-do_verify(_JWS, [], _VerifyClaims) ->
+do_verify(_JWT, [], _VerifyClaims) ->
     {error, invalid_signature};
-do_verify(JWS, [JWK | More], VerifyClaims) ->
-    try jose_jws:verify(JWK, JWS) of
-        {true, Payload, _JWS} ->
+do_verify(JWT, [JWK | More], VerifyClaims) ->
+    try jose_jws:verify(JWK, JWT) of
+        {true, Payload, _JWT} ->
             Claims0 = emqx_json:decode(Payload, [return_maps]),
             Claims = try_convert_to_int(Claims0, [<<"exp">>, <<"iat">>, <<"nbf">>]),
             case verify_claims(Claims, VerifyClaims) of
@@ -403,24 +391,24 @@ do_verify(JWS, [JWK | More], VerifyClaims) ->
                     {error, Reason}
             end;
         {false, _, _} ->
-            do_verify(JWS, More, VerifyClaims)
+            do_verify(JWT, More, VerifyClaims)
     catch
-        _:_Reason ->
-            ?TRACE("JWT", "authn_jwt_invalid_signature", #{jwk => JWK, jws => JWS}),
-            {error, invalid_signature}
+        _:Reason ->
+            ?TRACE_AUTHN_PROVIDER("jwt_verify_error", #{jwk => JWK, jwt => JWT, reason => Reason}),
+            do_verify(JWT, More, VerifyClaims)
     end.
 
 verify_claims(Claims, VerifyClaims0) ->
     Now = os:system_time(seconds),
     VerifyClaims =
         [
-            {<<"exp">>, required, fun(ExpireTime) ->
+            {<<"exp">>, fun(ExpireTime) ->
                 is_integer(ExpireTime) andalso Now < ExpireTime
             end},
-            {<<"iat">>, optional, fun(IssueAt) ->
+            {<<"iat">>, fun(IssueAt) ->
                 is_integer(IssueAt) andalso IssueAt =< Now
             end},
-            {<<"nbf">>, optional, fun(NotBefore) ->
+            {<<"nbf">>, fun(NotBefore) ->
                 is_integer(NotBefore) andalso NotBefore =< Now
             end}
         ] ++ VerifyClaims0,
@@ -450,13 +438,11 @@ try_convert_to_int(Claims, []) ->
 
 do_verify_claims(_Claims, []) ->
     ok;
-do_verify_claims(Claims, [{Name, Required, Fun} | More]) when is_function(Fun) ->
-    case {Required, maps:take(Name, Claims)} of
-        {optional, error} ->
+do_verify_claims(Claims, [{Name, Fun} | More]) when is_function(Fun) ->
+    case maps:take(Name, Claims) of
+        error ->
             do_verify_claims(Claims, More);
-        {required, error} ->
-            {error, {missing_claim, Name}};
-        {_, {Value, NClaims}} ->
+        {Value, NClaims} ->
             case Fun(Value) of
                 true ->
                     do_verify_claims(NClaims, More);

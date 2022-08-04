@@ -31,7 +31,7 @@
     get_bucket_cfg_path/2,
     desc/1,
     types/0,
-    is_enable/1
+    infinity_value/0
 ]).
 
 -define(KILOBYTE, 1024).
@@ -41,13 +41,15 @@
     | message_in
     | connection
     | message_routing
-    | batch.
+    %% internal limiter for unclassified resources
+    | internal.
 
+-type limiter_id() :: atom().
 -type bucket_name() :: atom().
 -type rate() :: infinity | float().
 -type burst_rate() :: 0 | float().
 %% the capacity of the token bucket
--type capacity() :: infinity | number().
+-type capacity() :: non_neg_integer().
 %% initial capacity of the token bucket
 -type initial() :: non_neg_integer().
 -type bucket_path() :: list(atom()).
@@ -76,7 +78,7 @@
     bucket_name/0
 ]).
 
--export_type([limiter_type/0, bucket_path/0]).
+-export_type([limiter_id/0, limiter_type/0, bucket_path/0]).
 
 -define(UNIT_TIME_IN_MS, 1000).
 
@@ -87,53 +89,50 @@ roots() -> [limiter].
 fields(limiter) ->
     [
         {Type,
-            ?HOCON(?R_REF(limiter_opts), #{
+            ?HOCON(?R_REF(node_opts), #{
                 desc => ?DESC(Type),
-                default => #{<<"enable">> => false}
+                default => #{}
             })}
      || Type <- types()
-    ];
-fields(limiter_opts) ->
+    ] ++
+        [
+            {client,
+                ?HOCON(
+                    ?R_REF(client_fields),
+                    #{
+                        desc => ?DESC(client),
+                        default => maps:from_list([
+                            {erlang:atom_to_binary(Type), #{}}
+                         || Type <- types()
+                        ])
+                    }
+                )}
+        ];
+fields(node_opts) ->
     [
-        {enable, ?HOCON(boolean(), #{desc => ?DESC(enable), default => true})},
         {rate, ?HOCON(rate(), #{desc => ?DESC(rate), default => "infinity"})},
         {burst,
             ?HOCON(burst_rate(), #{
                 desc => ?DESC(burst),
                 default => 0
-            })},
-        {bucket,
-            ?HOCON(
-                ?MAP("bucket_name", ?R_REF(bucket_opts)),
-                #{
-                    desc => ?DESC(bucket_cfg),
-                    default => #{<<"default">> => #{}},
-                    example => #{
-                        <<"mybucket-name">> => #{
-                            <<"rate">> => <<"infinity">>,
-                            <<"capcity">> => <<"infinity">>,
-                            <<"initial">> => <<"100">>,
-                            <<"per_client">> => #{<<"rate">> => <<"infinity">>}
-                        }
-                    }
-                }
-            )}
+            })}
+    ];
+fields(client_fields) ->
+    [
+        {Type,
+            ?HOCON(?R_REF(client_opts), #{
+                desc => ?DESC(Type),
+                default => #{}
+            })}
+     || Type <- types()
     ];
 fields(bucket_opts) ->
     [
         {rate, ?HOCON(rate(), #{desc => ?DESC(rate), default => "infinity"})},
         {capacity, ?HOCON(capacity(), #{desc => ?DESC(capacity), default => "infinity"})},
-        {initial, ?HOCON(initial(), #{default => "0", desc => ?DESC(initial)})},
-        {per_client,
-            ?HOCON(
-                ?R_REF(client_bucket),
-                #{
-                    default => #{},
-                    desc => ?DESC(per_client)
-                }
-            )}
+        {initial, ?HOCON(initial(), #{default => "0", desc => ?DESC(initial)})}
     ];
-fields(client_bucket) ->
+fields(client_opts) ->
     [
         {rate, ?HOCON(rate(), #{default => "infinity", desc => ?DESC(rate)})},
         {initial, ?HOCON(initial(), #{default => "0", desc => ?DESC(initial)})},
@@ -178,16 +177,30 @@ fields(client_bucket) ->
                     default => force
                 }
             )}
-    ].
+    ];
+fields(listener_fields) ->
+    bucket_fields([bytes_in, message_in, connection, message_routing], listener_client_fields);
+fields(listener_client_fields) ->
+    client_fields([bytes_in, message_in, connection, message_routing]);
+fields(Type) ->
+    bucket_field(Type).
 
 desc(limiter) ->
     "Settings for the rate limiter.";
-desc(limiter_opts) ->
-    "Settings for the limiter.";
+desc(node_opts) ->
+    "Settings for the limiter of the node level.";
 desc(bucket_opts) ->
     "Settings for the bucket.";
-desc(client_bucket) ->
-    "Settings for the client bucket.";
+desc(client_opts) ->
+    "Settings for the client in bucket level.";
+desc(client_fields) ->
+    "Fields of the client level.";
+desc(listener_fields) ->
+    "Fields of the listener.";
+desc(listener_client_fields) ->
+    "Fields of the client level of the listener.";
+desc(internal) ->
+    "Internal limiter.";
 desc(_) ->
     undefined.
 
@@ -202,12 +215,20 @@ to_rate(Str) ->
 get_bucket_cfg_path(Type, BucketName) ->
     [limiter, Type, bucket, BucketName].
 
--spec is_enable(limiter_type()) -> boolean().
-is_enable(Type) ->
-    emqx:get_config([limiter, Type, enable], false).
-
 types() ->
-    [bytes_in, message_in, connection, message_routing, batch].
+    [bytes_in, message_in, connection, message_routing, internal].
+
+%%--------------------------------------------------------------------
+%% Internal functions
+%%--------------------------------------------------------------------
+
+%% `infinity` to `infinity_value` rules:
+%% 1. all infinity capacity will change to infinity_value
+%% 2. if the rate of global and bucket  both are `infinity`,
+%%    use `infinity_value` as bucket rate. see `emqx_limiter_server:get_counter_rate/2`
+infinity_value() ->
+    %% 1 TB
+    1099511627776.
 
 %%--------------------------------------------------------------------
 %% Internal functions
@@ -300,7 +321,7 @@ to_quota(Str, Regex) ->
             {match, [Quota, ""]} ->
                 {ok, erlang:list_to_integer(Quota)};
             {match, ""} ->
-                {ok, infinity};
+                {ok, infinity_value()};
             _ ->
                 {error, Str}
         end
@@ -314,3 +335,45 @@ apply_unit("kb", Val) -> Val * ?KILOBYTE;
 apply_unit("mb", Val) -> Val * ?KILOBYTE * ?KILOBYTE;
 apply_unit("gb", Val) -> Val * ?KILOBYTE * ?KILOBYTE * ?KILOBYTE;
 apply_unit(Unit, _) -> throw("invalid unit:" ++ Unit).
+
+bucket_field(Type) when is_atom(Type) ->
+    fields(bucket_opts) ++
+        [
+            {client,
+                ?HOCON(
+                    ?R_REF(?MODULE, client_opts),
+                    #{
+                        desc => ?DESC(client),
+                        required => false
+                    }
+                )}
+        ].
+bucket_fields(Types, ClientRef) ->
+    [
+        {Type,
+            ?HOCON(?R_REF(?MODULE, bucket_opts), #{
+                desc => ?DESC(?MODULE, Type),
+                required => false
+            })}
+     || Type <- Types
+    ] ++
+        [
+            {client,
+                ?HOCON(
+                    ?R_REF(?MODULE, ClientRef),
+                    #{
+                        desc => ?DESC(client),
+                        required => false
+                    }
+                )}
+        ].
+
+client_fields(Types) ->
+    [
+        {Type,
+            ?HOCON(?R_REF(client_opts), #{
+                desc => ?DESC(Type),
+                required => false
+            })}
+     || Type <- Types
+    ].

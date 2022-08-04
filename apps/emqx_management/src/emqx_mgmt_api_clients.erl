@@ -39,8 +39,9 @@
     subscriptions/2,
     authz_cache/2,
     subscribe/2,
-    unsubscribe/2,
     subscribe_batch/2,
+    unsubscribe/2,
+    unsubscribe_batch/2,
     set_keepalive/2
 ]).
 
@@ -53,6 +54,7 @@
 -export([do_subscribe/3]).
 
 -define(CLIENT_QTAB, emqx_channel_info).
+-define(TAGS, [<<"Clients">>]).
 
 -define(CLIENT_QSCHEMA, [
     {<<"node">>, atom},
@@ -88,7 +90,9 @@ paths() ->
         "/clients/:clientid/authorization/cache",
         "/clients/:clientid/subscriptions",
         "/clients/:clientid/subscribe",
+        "/clients/:clientid/subscribe/bulk",
         "/clients/:clientid/unsubscribe",
+        "/clients/:clientid/unsubscribe/bulk",
         "/clients/:clientid/keepalive"
     ].
 
@@ -97,6 +101,7 @@ schema("/clients") ->
         'operationId' => clients,
         get => #{
             description => <<"List clients">>,
+            tags => ?TAGS,
             parameters => [
                 hoconsc:ref(emqx_dashboard_swagger, page),
                 hoconsc:ref(emqx_dashboard_swagger, limit),
@@ -217,6 +222,7 @@ schema("/clients/:clientid") ->
         'operationId' => client,
         get => #{
             description => <<"Get clients info by client ID">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             responses => #{
                 200 => hoconsc:mk(hoconsc:ref(?MODULE, client), #{}),
@@ -227,6 +233,7 @@ schema("/clients/:clientid") ->
         },
         delete => #{
             description => <<"Kick out client by client ID">>,
+            tags => ?TAGS,
             parameters => [
                 {clientid, hoconsc:mk(binary(), #{in => path})}
             ],
@@ -243,6 +250,7 @@ schema("/clients/:clientid/authorization/cache") ->
         'operationId' => authz_cache,
         get => #{
             description => <<"Get client authz cache in the cluster.">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             responses => #{
                 200 => hoconsc:mk(hoconsc:ref(?MODULE, authz_cache), #{}),
@@ -253,6 +261,7 @@ schema("/clients/:clientid/authorization/cache") ->
         },
         delete => #{
             description => <<"Clean client authz cache in the cluster.">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             responses => #{
                 204 => <<"Kick out client successfully">>,
@@ -267,6 +276,7 @@ schema("/clients/:clientid/subscriptions") ->
         'operationId' => subscriptions,
         get => #{
             description => <<"Get client subscriptions">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             responses => #{
                 200 => hoconsc:mk(
@@ -283,10 +293,27 @@ schema("/clients/:clientid/subscribe") ->
         'operationId' => subscribe,
         post => #{
             description => <<"Subscribe">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             'requestBody' => hoconsc:mk(hoconsc:ref(?MODULE, subscribe)),
             responses => #{
                 200 => hoconsc:ref(emqx_mgmt_api_subscriptions, subscription),
+                404 => emqx_dashboard_swagger:error_codes(
+                    ['CLIENTID_NOT_FOUND'], <<"Client id not found">>
+                )
+            }
+        }
+    };
+schema("/clients/:clientid/subscribe/bulk") ->
+    #{
+        'operationId' => subscribe_batch,
+        post => #{
+            description => <<"Subscribe">>,
+            tags => ?TAGS,
+            parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
+            'requestBody' => hoconsc:mk(hoconsc:array(hoconsc:ref(?MODULE, subscribe))),
+            responses => #{
+                200 => hoconsc:array(hoconsc:ref(emqx_mgmt_api_subscriptions, subscription)),
                 404 => emqx_dashboard_swagger:error_codes(
                     ['CLIENTID_NOT_FOUND'], <<"Client id not found">>
                 )
@@ -298,8 +325,25 @@ schema("/clients/:clientid/unsubscribe") ->
         'operationId' => unsubscribe,
         post => #{
             description => <<"Unsubscribe">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             'requestBody' => hoconsc:mk(hoconsc:ref(?MODULE, unsubscribe)),
+            responses => #{
+                204 => <<"Unsubscribe OK">>,
+                404 => emqx_dashboard_swagger:error_codes(
+                    ['CLIENTID_NOT_FOUND'], <<"Client id not found">>
+                )
+            }
+        }
+    };
+schema("/clients/:clientid/unsubscribe/bulk") ->
+    #{
+        'operationId' => unsubscribe_batch,
+        post => #{
+            description => <<"Unsubscribe">>,
+            tags => ?TAGS,
+            parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
+            'requestBody' => hoconsc:mk(hoconsc:array(hoconsc:ref(?MODULE, unsubscribe))),
             responses => #{
                 204 => <<"Unsubscribe OK">>,
                 404 => emqx_dashboard_swagger:error_codes(
@@ -313,6 +357,7 @@ schema("/clients/:clientid/keepalive") ->
         'operationId' => set_keepalive,
         put => #{
             description => <<"Set the online client keepalive by seconds">>,
+            tags => ?TAGS,
             parameters => [{clientid, hoconsc:mk(binary(), #{in => path})}],
             'requestBody' => hoconsc:mk(hoconsc:ref(?MODULE, keepalive)),
             responses => #{
@@ -543,11 +588,6 @@ subscribe(post, #{bindings := #{clientid := ClientID}, body := TopicInfo}) ->
     Opts = emqx_map_lib:unsafe_atom_key_map(TopicInfo),
     subscribe(Opts#{clientid => ClientID}).
 
-unsubscribe(post, #{bindings := #{clientid := ClientID}, body := TopicInfo}) ->
-    Topic = maps:get(<<"topic">>, TopicInfo),
-    unsubscribe(#{clientid => ClientID, topic => Topic}).
-
-%% TODO: batch
 subscribe_batch(post, #{bindings := #{clientid := ClientID}, body := TopicInfos}) ->
     Topics =
         [
@@ -555,6 +595,14 @@ subscribe_batch(post, #{bindings := #{clientid := ClientID}, body := TopicInfos}
          || TopicInfo <- TopicInfos
         ],
     subscribe_batch(#{clientid => ClientID, topics => Topics}).
+
+unsubscribe(post, #{bindings := #{clientid := ClientID}, body := TopicInfo}) ->
+    Topic = maps:get(<<"topic">>, TopicInfo),
+    unsubscribe(#{clientid => ClientID, topic => Topic}).
+
+unsubscribe_batch(post, #{bindings := #{clientid := ClientID}, body := TopicInfos}) ->
+    Topics = [Topic || #{<<"topic">> := Topic} <- TopicInfos],
+    unsubscribe_batch(#{clientid => ClientID, topics => Topics}).
 
 subscriptions(get, #{bindings := #{clientid := ClientID}}) ->
     case emqx_mgmt:list_client_subscriptions(ClientID) of
@@ -668,9 +716,20 @@ subscribe(#{clientid := ClientID, topic := Topic} = Sub) ->
         {error, Reason} ->
             Message = list_to_binary(io_lib:format("~p", [Reason])),
             {500, #{code => <<"UNKNOW_ERROR">>, message => Message}};
-        {ok, Node} ->
-            Response = Sub#{node => Node},
-            {200, Response}
+        {ok, SubInfo} ->
+            {200, SubInfo}
+    end.
+
+subscribe_batch(#{clientid := ClientID, topics := Topics}) ->
+    case lookup(#{clientid => ClientID}) of
+        {200, _} ->
+            ArgList = [
+                [ClientID, Topic, maps:with([qos, nl, rap, rh], Sub)]
+             || #{topic := Topic} = Sub <- Topics
+            ],
+            {200, emqx_mgmt_util:batch_operation(?MODULE, do_subscribe, ArgList)};
+        {404, ?CLIENT_ID_NOT_FOUND} ->
+            {404, ?CLIENT_ID_NOT_FOUND}
     end.
 
 unsubscribe(#{clientid := ClientID, topic := Topic}) ->
@@ -681,12 +740,14 @@ unsubscribe(#{clientid := ClientID, topic := Topic}) ->
             {204}
     end.
 
-subscribe_batch(#{clientid := ClientID, topics := Topics}) ->
-    ArgList = [
-        [ClientID, Topic, maps:with([qos, nl, rap, rh], Sub)]
-     || #{topic := Topic} = Sub <- Topics
-    ],
-    emqx_mgmt_util:batch_operation(?MODULE, do_subscribe, ArgList).
+unsubscribe_batch(#{clientid := ClientID, topics := Topics}) ->
+    case lookup(#{clientid => ClientID}) of
+        {200, _} ->
+            _ = emqx_mgmt:unsubscribe_batch(ClientID, Topics),
+            {204};
+        {404, ?CLIENT_ID_NOT_FOUND} ->
+            {404, ?CLIENT_ID_NOT_FOUND}
+    end.
 
 %%--------------------------------------------------------------------
 %% internal function
@@ -700,7 +761,7 @@ do_subscribe(ClientID, Topic0, Options) ->
         {subscribe, Subscriptions, Node} ->
             case proplists:is_defined(Topic, Subscriptions) of
                 true ->
-                    {ok, Node};
+                    {ok, Options#{node => Node, clientid => ClientID, topic => Topic}};
                 false ->
                     {error, unknow_error}
             end

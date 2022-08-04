@@ -38,14 +38,13 @@
 ]).
 
 -export([
-    change_emqx_opts/1,
-    change_emqx_opts/2,
     client_ssl/0,
     client_ssl/1,
     client_ssl_twoway/0,
     client_ssl_twoway/1,
     ensure_mnesia_stopped/0,
     ensure_quic_listener/2,
+    is_all_tcp_servers_available/1,
     is_tcp_server_available/2,
     is_tcp_server_available/3,
     load_config/2,
@@ -320,58 +319,6 @@ wait_for(Fn, Ln, F, Timeout) ->
     {Pid, Mref} = erlang:spawn_monitor(fun() -> wait_loop(F, catch_call(F)) end),
     wait_for_down(Fn, Ln, Timeout, Pid, Mref, false).
 
-change_emqx_opts(SslType) ->
-    change_emqx_opts(SslType, []).
-
-change_emqx_opts(SslType, MoreOpts) ->
-    {ok, Listeners} = application:get_env(emqx, listeners),
-    NewListeners =
-        lists:map(
-            fun(Listener) ->
-                maybe_inject_listener_ssl_options(SslType, MoreOpts, Listener)
-            end,
-            Listeners
-        ),
-    emqx_conf:update([listeners], NewListeners, #{}).
-
-maybe_inject_listener_ssl_options(SslType, MoreOpts, {sll, Port, Opts}) ->
-    %% this clause is kept to be backward compatible
-    %% new config for listener is a map, old is a three-element tuple
-    {ssl, Port, inject_listener_ssl_options(SslType, Opts, MoreOpts)};
-maybe_inject_listener_ssl_options(SslType, MoreOpts, #{proto := ssl, opts := Opts} = Listener) ->
-    Listener#{opts := inject_listener_ssl_options(SslType, Opts, MoreOpts)};
-maybe_inject_listener_ssl_options(_SslType, _MoreOpts, Listener) ->
-    Listener.
-
-inject_listener_ssl_options(SslType, Opts, MoreOpts) ->
-    SslOpts = proplists:get_value(ssl_options, Opts),
-    Keyfile = app_path(emqx, filename:join(["etc", "certs", "key.pem"])),
-    Certfile = app_path(emqx, filename:join(["etc", "certs", "cert.pem"])),
-    TupleList1 = lists:keyreplace(keyfile, 1, SslOpts, {keyfile, Keyfile}),
-    TupleList2 = lists:keyreplace(certfile, 1, TupleList1, {certfile, Certfile}),
-    TupleList3 =
-        case SslType of
-            ssl_twoway ->
-                CAfile = app_path(emqx, proplists:get_value(cacertfile, ?MQTT_SSL_TWOWAY)),
-                MutSslList = lists:keyreplace(
-                    cacertfile, 1, ?MQTT_SSL_TWOWAY, {cacertfile, CAfile}
-                ),
-                lists:merge(TupleList2, MutSslList);
-            _ ->
-                lists:filter(
-                    fun
-                        ({cacertfile, _}) -> false;
-                        ({verify, _}) -> false;
-                        ({fail_if_no_peer_cert, _}) -> false;
-                        (_) -> true
-                    end,
-                    TupleList2
-                )
-        end,
-    TupleList4 = emqx_misc:merge_opts(TupleList3, proplists:get_value(ssl_options, MoreOpts, [])),
-    NMoreOpts = emqx_misc:merge_opts(MoreOpts, [{ssl_options, TupleList4}]),
-    emqx_misc:merge_opts(Opts, NMoreOpts).
-
 flush() ->
     flush([]).
 
@@ -486,6 +433,18 @@ load_config(SchemaModule, Config, Opts) ->
 load_config(SchemaModule, Config) ->
     load_config(SchemaModule, Config, #{raw_with_default => false}).
 
+-spec is_all_tcp_servers_available(Servers) -> Result when
+    Servers :: [{Host, Port}],
+    Host :: inet:socket_address() | inet:hostname(),
+    Port :: inet:port_number(),
+    Result :: boolean().
+is_all_tcp_servers_available(Servers) ->
+    Fun =
+        fun({Host, Port}) ->
+            is_tcp_server_available(Host, Port)
+        end,
+    lists:all(Fun, Servers).
+
 -spec is_tcp_server_available(
     Host :: inet:socket_address() | inet:hostname(),
     Port :: inet:port_number()
@@ -526,7 +485,6 @@ ensure_dashboard_listeners_started(_App) ->
 -spec ensure_quic_listener(Name :: atom(), UdpPort :: inet:port_number()) -> ok.
 ensure_quic_listener(Name, UdpPort) ->
     application:ensure_all_started(quicer),
-    emqx_config:put([listeners, quic, Name, mountpoint], <<>>),
     Conf = #{
         acceptors => 16,
         bind => {{0, 0, 0, 0}, UdpPort},
@@ -545,6 +503,7 @@ ensure_quic_listener(Name, UdpPort) ->
         mountpoint => <<>>,
         zone => default
     },
+    emqx_config:put([listeners, quic, Name], Conf),
     case emqx_listeners:start_listener(quic, Name, Conf) of
         ok -> ok;
         {error, {already_started, _Pid}} -> ok
@@ -636,6 +595,7 @@ setup_node(Node, Opts) when is_map(Opts) ->
     EnvHandler = maps:get(env_handler, Opts, fun(_) -> ok end),
     ConfigureGenRpc = maps:get(configure_gen_rpc, Opts, true),
     LoadSchema = maps:get(load_schema, Opts, true),
+    SchemaMod = maps:get(schema_mod, Opts, emqx_schema),
     LoadApps = maps:get(load_apps, Opts, [gen_rpc, emqx, ekka, mria] ++ Apps),
     Env = maps:get(env, Opts, []),
     Conf = maps:get(conf, Opts, []),
@@ -671,7 +631,7 @@ setup_node(Node, Opts) when is_map(Opts) ->
             %% Otherwise, configuration get's loaded and all preset env in envhandler is lost
             LoadSchema andalso
                 begin
-                    emqx_config:init_load(emqx_schema),
+                    emqx_config:init_load(SchemaMod),
                     application:set_env(emqx, init_config_load_done, true)
                 end,
 

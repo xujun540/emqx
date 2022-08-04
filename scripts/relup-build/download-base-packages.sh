@@ -6,20 +6,20 @@ if [[ -n "$DEBUG" ]]; then set -x; fi
 set -euo pipefail
 
 # ensure dir
-cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.."
+cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 ROOT_DIR="$(pwd)"
 
-PROFILE="${1:-emqx}"
+PROFILE="${1:-emqx-enterprise}"
 export PROFILE
 
 case $PROFILE in
-    "emqx")
-        DIR='broker'
-        EDITION='community'
-        ;;
     "emqx-enterprise")
-        DIR='enterprise'
+        DIR='emqx-ee'
         EDITION='enterprise'
+        ;;
+    "emqx")
+        echo "No relup for opensource edition"
+        exit 0
         ;;
     *)
         echo "Unknown profile $PROFILE"
@@ -27,9 +27,13 @@ case $PROFILE in
         ;;
 esac
 
-UNAME="$(uname -s)"
-case "$UNAME" in
-    Darwin)
+SYSTEM="$(./scripts/get-distro.sh)"
+case "$SYSTEM" in
+    windows*)
+        echo "NOTE: no_relup_for_windows"
+        exit 0
+        ;;
+    macos*)
         SHASUM="shasum -a 256"
         ;;
     *)
@@ -37,7 +41,7 @@ case "$UNAME" in
         ;;
 esac
 
-BASE_VERSIONS="$("${ROOT_DIR}"/scripts/relup-base-vsns.sh "$EDITION" | xargs echo -n)"
+BASE_VERSIONS="$("${ROOT_DIR}"/scripts/relup-build/base-vsns.sh "$EDITION" | xargs echo -n)"
 
 fullvsn() {
     env PKG_VSN="$1" "${ROOT_DIR}"/pkg-vsn.sh "$PROFILE" --long
@@ -47,7 +51,7 @@ mkdir -p _upgrade_base
 pushd _upgrade_base >/dev/null
 for tag in ${BASE_VERSIONS}; do
     filename="$PROFILE-$(fullvsn "${tag#[e|v]}").tar.gz"
-    url="https://www.emqx.com/downloads/$DIR/$tag/$filename"
+    url="https://packages.emqx.io/$DIR/$tag/$filename"
     echo "downloading ${filename} ..."
     ## if the file does not exist (not downloaded yet)
     ## and there is such a package to downlaod

@@ -4,11 +4,13 @@
 
 main(_) ->
     BaseConf = <<"">>,
-    Cfgs = get_all_cfgs("apps/"),
-    Conf = [merge(BaseConf, Cfgs),
+    Cfgs0 = get_all_cfgs("apps/"),
+    Cfgs1 = get_all_cfgs("lib-ee/"),
+    Conf0 = merge(BaseConf, Cfgs0),
+    Conf = [merge(Conf0, Cfgs1),
             io_lib:nl()
-            ],
-    ok = file:write_file("apps/emqx_dashboard/etc/i18n.conf.all", Conf).
+           ],
+    ok = file:write_file("apps/emqx_dashboard/priv/i18n.conf", Conf).
 
 merge(BaseConf, Cfgs) ->
     lists:foldl(

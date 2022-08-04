@@ -154,12 +154,10 @@ schema("/users/:username/change_pwd") ->
             'requestBody' => fields([old_pwd, new_pwd]),
             responses => #{
                 204 => <<"Update user password successfully">>,
-                401 => emqx_dashboard_swagger:error_codes(
-                    [?WRONG_USERNAME_OR_PWD, ?ERROR_PWD_NOT_MATCH], ?DESC(login_failed401)
-                ),
                 404 => response_schema(404),
                 400 => emqx_dashboard_swagger:error_codes(
-                    [?BAD_REQUEST], ?DESC(login_failed_response400)
+                    [?BAD_REQUEST, ?ERROR_PWD_NOT_MATCH],
+                    ?DESC(login_failed_response400)
                 )
             }
         }
@@ -182,7 +180,6 @@ field(username_in_path) ->
     {username,
         mk(binary(), #{
             desc => ?DESC(username),
-            'maxLength' => 100,
             example => <<"admin">>,
             in => path,
             required => true
@@ -198,8 +195,8 @@ field(license) ->
     {license, [
         {edition,
             mk(
-                enum([community, enterprise]),
-                #{desc => ?DESC(license), example => community}
+                enum([opensource, enterprise]),
+                #{desc => ?DESC(license), example => opensource}
             )}
     ]};
 field(version) ->
@@ -274,20 +271,57 @@ user(put, #{bindings := #{username := Username}, body := Params}) ->
         {error, Reason} ->
             {404, ?USER_NOT_FOUND, Reason}
     end;
-user(delete, #{bindings := #{username := Username}}) ->
+user(delete, #{bindings := #{username := Username}, headers := Headers}) ->
     case Username == emqx_dashboard_admin:default_username() of
         true ->
             ?SLOG(info, #{msg => "Dashboard delete admin user failed", username => Username}),
             Message = list_to_binary(io_lib:format("Cannot delete user ~p", [Username])),
             {400, ?NOT_ALLOWED, Message};
         false ->
-            case emqx_dashboard_admin:remove_user(Username) of
-                {error, Reason} ->
-                    {404, ?USER_NOT_FOUND, Reason};
-                {ok, _} ->
-                    ?SLOG(info, #{msg => "Dashboard delete admin user", username => Username}),
-                    {204}
+            case is_self_auth(Username, Headers) of
+                true ->
+                    {400, ?NOT_ALLOWED, <<"Cannot delete self">>};
+                false ->
+                    case emqx_dashboard_admin:remove_user(Username) of
+                        {error, Reason} ->
+                            {404, ?USER_NOT_FOUND, Reason};
+                        {ok, _} ->
+                            ?SLOG(info, #{
+                                msg => "Dashboard delete admin user", username => Username
+                            }),
+                            {204}
+                    end
             end
+    end.
+
+is_self_auth(Username, #{<<"authorization">> := Token}) ->
+    is_self_auth(Username, Token);
+is_self_auth(Username, #{<<"Authorization">> := Token}) ->
+    is_self_auth(Username, Token);
+is_self_auth(Username, <<"basic ", Token/binary>>) ->
+    is_self_auth_basic(Username, Token);
+is_self_auth(Username, <<"Basic ", Token/binary>>) ->
+    is_self_auth_basic(Username, Token);
+is_self_auth(Username, <<"bearer ", Token/binary>>) ->
+    is_self_auth_token(Username, Token);
+is_self_auth(Username, <<"Bearer ", Token/binary>>) ->
+    is_self_auth_token(Username, Token).
+
+is_self_auth_basic(Username, Token) ->
+    UP = base64:decode(Token),
+    case binary:match(UP, Username) of
+        {0, N} ->
+            binary:part(UP, {N, 1}) == <<":">>;
+        _ ->
+            false
+    end.
+
+is_self_auth_token(Username, Token) ->
+    case emqx_dashboard_token:owner(Token) of
+        {ok, Owner} ->
+            Owner == Username;
+        {error, _NotFound} ->
+            false
     end.
 
 change_pwd(put, #{bindings := #{username := Username}, body := Params}) ->
@@ -308,7 +342,7 @@ change_pwd(put, #{bindings := #{username := Username}, body := Params}) ->
                     {404, ?USER_NOT_FOUND, <<"User not found">>};
                 {error, <<"password_error">>} ->
                     ?SLOG(error, LogMeta#{result => failed, reason => "error old pwd"}),
-                    {401, ?ERROR_PWD_NOT_MATCH, <<"Old password not match">>};
+                    {400, ?ERROR_PWD_NOT_MATCH, <<"Old password not match">>};
                 {error, Reason} ->
                     ?SLOG(error, LogMeta#{result => failed, reason => Reason}),
                     {400, ?BAD_REQUEST, Reason}

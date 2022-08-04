@@ -62,7 +62,7 @@ get_raw(KeyPath) ->
 %% @doc Returns all values in the cluster.
 -spec get_all(emqx_map_lib:config_key_path()) -> #{node() => term()}.
 get_all(KeyPath) ->
-    {ResL, []} = emqx_conf_proto_v1:get_all(KeyPath),
+    {ResL, []} = emqx_conf_proto_v2:get_all(KeyPath),
     maps:from_list(ResL).
 
 %% @doc Returns the specified node's KeyPath, or exception if not found
@@ -70,14 +70,14 @@ get_all(KeyPath) ->
 get_by_node(Node, KeyPath) when Node =:= node() ->
     emqx:get_config(KeyPath);
 get_by_node(Node, KeyPath) ->
-    emqx_conf_proto_v1:get_config(Node, KeyPath).
+    emqx_conf_proto_v2:get_config(Node, KeyPath).
 
 %% @doc Returns the specified node's KeyPath, or the default value if not found
 -spec get_by_node(node(), emqx_map_lib:config_key_path(), term()) -> term().
 get_by_node(Node, KeyPath, Default) when Node =:= node() ->
     emqx:get_config(KeyPath, Default);
 get_by_node(Node, KeyPath, Default) ->
-    emqx_conf_proto_v1:get_config(Node, KeyPath, Default).
+    emqx_conf_proto_v2:get_config(Node, KeyPath, Default).
 
 %% @doc Returns the specified node's KeyPath, or config_not_found if key path not found
 -spec get_node_and_config(emqx_map_lib:config_key_path()) -> term().
@@ -92,7 +92,7 @@ get_node_and_config(KeyPath) ->
 ) ->
     {ok, emqx_config:update_result()} | {error, emqx_config:update_error()}.
 update(KeyPath, UpdateReq, Opts) ->
-    emqx_conf_proto_v1:update(KeyPath, UpdateReq, Opts).
+    emqx_conf_proto_v2:update(KeyPath, UpdateReq, Opts).
 
 %% @doc Update the specified node's key path in local-override.conf.
 -spec update(
@@ -105,13 +105,13 @@ update(KeyPath, UpdateReq, Opts) ->
 update(Node, KeyPath, UpdateReq, Opts0) when Node =:= node() ->
     emqx:update_config(KeyPath, UpdateReq, Opts0#{override_to => local});
 update(Node, KeyPath, UpdateReq, Opts) ->
-    emqx_conf_proto_v1:update(Node, KeyPath, UpdateReq, Opts).
+    emqx_conf_proto_v2:update(Node, KeyPath, UpdateReq, Opts).
 
 %% @doc remove all value of key path in cluster-override.conf or local-override.conf.
 -spec remove(emqx_map_lib:config_key_path(), emqx_config:update_opts()) ->
     {ok, emqx_config:update_result()} | {error, emqx_config:update_error()}.
 remove(KeyPath, Opts) ->
-    emqx_conf_proto_v1:remove_config(KeyPath, Opts).
+    emqx_conf_proto_v2:remove_config(KeyPath, Opts).
 
 %% @doc remove the specified node's key path in local-override.conf.
 -spec remove(node(), emqx_map_lib:config_key_path(), emqx_config:update_opts()) ->
@@ -119,13 +119,13 @@ remove(KeyPath, Opts) ->
 remove(Node, KeyPath, Opts) when Node =:= node() ->
     emqx:remove_config(KeyPath, Opts#{override_to => local});
 remove(Node, KeyPath, Opts) ->
-    emqx_conf_proto_v1:remove_config(Node, KeyPath, Opts).
+    emqx_conf_proto_v2:remove_config(Node, KeyPath, Opts).
 
 %% @doc reset all value of key path in cluster-override.conf or local-override.conf.
 -spec reset(emqx_map_lib:config_key_path(), emqx_config:update_opts()) ->
     {ok, emqx_config:update_result()} | {error, emqx_config:update_error()}.
 reset(KeyPath, Opts) ->
-    emqx_conf_proto_v1:reset(KeyPath, Opts).
+    emqx_conf_proto_v2:reset(KeyPath, Opts).
 
 %% @doc reset the specified node's key path in local-override.conf.
 -spec reset(node(), emqx_map_lib:config_key_path(), emqx_config:update_opts()) ->
@@ -133,20 +133,21 @@ reset(KeyPath, Opts) ->
 reset(Node, KeyPath, Opts) when Node =:= node() ->
     emqx:reset_config(KeyPath, Opts#{override_to => local});
 reset(Node, KeyPath, Opts) ->
-    emqx_conf_proto_v1:reset(Node, KeyPath, Opts).
+    emqx_conf_proto_v2:reset(Node, KeyPath, Opts).
 
 %% @doc Called from build script.
 -spec dump_schema(file:name_all()) -> ok.
 dump_schema(Dir) ->
-    I18nFile = emqx:etc_file("i18n.conf"),
+    I18nFile = emqx_dashboard:i18n_file(),
     dump_schema(Dir, emqx_conf_schema, I18nFile).
 
 dump_schema(Dir, SchemaModule, I18nFile) ->
     lists:foreach(
         fun(Lang) ->
             gen_config_md(Dir, I18nFile, SchemaModule, Lang),
-            gen_hot_conf_schema_json(Dir, I18nFile, Lang),
-            gen_example_conf(Dir, I18nFile, SchemaModule, Lang)
+            gen_api_schema_json(Dir, I18nFile, Lang),
+            ExampleDir = filename:join(filename:dirname(filename:dirname(I18nFile)), "etc"),
+            gen_example_conf(ExampleDir, I18nFile, SchemaModule, Lang)
         end,
         [en, zh]
     ),
@@ -161,13 +162,31 @@ gen_schema_json(Dir, I18nFile, SchemaModule) ->
     IoData = jsx:encode(JsonMap, [space, {indent, 4}]),
     ok = file:write_file(SchemaJsonFile, IoData).
 
-gen_hot_conf_schema_json(Dir, I18nFile, Lang) ->
+gen_api_schema_json(Dir, I18nFile, Lang) ->
     emqx_dashboard:init_i18n(I18nFile, Lang),
-    JsonFile = "hot-config-schema-" ++ atom_to_list(Lang) ++ ".json",
-    HotConfigSchemaFile = filename:join([Dir, JsonFile]),
-    io:format(user, "===< Generating: ~s~n", [HotConfigSchemaFile]),
-    ok = gen_hot_conf_schema(HotConfigSchemaFile),
+    gen_api_schema_json_hotconf(Dir, Lang),
+    gen_api_schema_json_connector(Dir, Lang),
+    gen_api_schema_json_bridge(Dir, Lang),
     emqx_dashboard:clear_i18n().
+
+gen_api_schema_json_hotconf(Dir, Lang) ->
+    SchemaInfo = #{title => <<"EMQX Hot Conf API Schema">>, version => <<"0.1.0">>},
+    File = schema_filename(Dir, "hot-config-schema-", Lang),
+    ok = do_gen_api_schema_json(File, emqx_mgmt_api_configs, SchemaInfo).
+
+gen_api_schema_json_connector(Dir, Lang) ->
+    SchemaInfo = #{title => <<"EMQX Connector API Schema">>, version => <<"0.1.0">>},
+    File = schema_filename(Dir, "connector-api-", Lang),
+    ok = do_gen_api_schema_json(File, emqx_connector_api, SchemaInfo).
+
+gen_api_schema_json_bridge(Dir, Lang) ->
+    SchemaInfo = #{title => <<"EMQX Data Bridge API Schema">>, version => <<"0.1.0">>},
+    File = schema_filename(Dir, "bridge-api-", Lang),
+    ok = do_gen_api_schema_json(File, emqx_bridge_api, SchemaInfo).
+
+schema_filename(Dir, Prefix, Lang) ->
+    Filename = Prefix ++ atom_to_list(Lang) ++ ".json",
+    filename:join([Dir, Filename]).
 
 gen_config_md(Dir, I18nFile, SchemaModule, Lang0) ->
     Lang = atom_to_list(Lang0),
@@ -177,7 +196,7 @@ gen_config_md(Dir, I18nFile, SchemaModule, Lang0) ->
 
 gen_example_conf(Dir, I18nFile, SchemaModule, Lang0) ->
     Lang = atom_to_list(Lang0),
-    SchemaMdFile = filename:join([Dir, "emqx-" ++ Lang ++ ".conf.example"]),
+    SchemaMdFile = filename:join([Dir, "emqx.conf." ++ Lang ++ ".example"]),
     io:format(user, "===< Generating: ~s~n", [SchemaMdFile]),
     ok = gen_example(SchemaMdFile, SchemaModule, I18nFile, Lang).
 
@@ -196,22 +215,30 @@ schema_module() ->
 -spec gen_doc(file:name_all(), module(), file:name_all(), string()) -> ok.
 gen_doc(File, SchemaModule, I18nFile, Lang) ->
     Version = emqx_release:version(),
-    Title = "# " ++ emqx_release:description() ++ " " ++ Version ++ " Configuration",
-    BodyFile = filename:join([rel, "emqx_conf.template.en.md"]),
+    Title =
+        "# " ++ emqx_release:description() ++ " Configuration\n\n" ++
+            "<!--" ++ Version ++ "-->",
+    BodyFile = filename:join([rel, "emqx_conf.template." ++ Lang ++ ".md"]),
     {ok, Body} = file:read_file(BodyFile),
     Opts = #{title => Title, body => Body, desc_file => I18nFile, lang => Lang},
     Doc = hocon_schema_md:gen(SchemaModule, Opts),
     file:write_file(File, Doc).
 
 gen_example(File, SchemaModule, I18nFile, Lang) ->
-    Opts = #{title => <<"Title">>, body => <<"Body">>, desc_file => I18nFile, lang => Lang},
+    Opts = #{
+        title => <<"EMQX Configuration Example">>,
+        body => <<"">>,
+        desc_file => I18nFile,
+        lang => Lang
+    },
     Example = hocon_schema_example:gen(SchemaModule, Opts),
     file:write_file(File, Example).
 
 %% Only gen hot_conf schema, not all configuration fields.
-gen_hot_conf_schema(File) ->
+do_gen_api_schema_json(File, SchemaMod, SchemaInfo) ->
+    io:format(user, "===< Generating: ~s~n", [File]),
     {ApiSpec0, Components0} = emqx_dashboard_swagger:spec(
-        emqx_mgmt_api_configs,
+        SchemaMod,
         #{schema_converter => fun hocon_schema_to_spec/2}
     ),
     ApiSpec = lists:foldl(
@@ -243,7 +270,7 @@ gen_hot_conf_schema(File) ->
     Components = lists:foldl(fun(M, Acc) -> maps:merge(M, Acc) end, #{}, Components0),
     IoData = jsx:encode(
         #{
-            info => #{title => <<"EMQX Hot Conf Schema">>, version => <<"0.1.0">>},
+            info => SchemaInfo,
             paths => ApiSpec,
             components => #{schemas => Components}
         },

@@ -38,16 +38,16 @@ bcrypt() ->
     {bcrypt, {git, "https://github.com/emqx/erlang-bcrypt.git", {tag, "0.6.0"}}}.
 
 quicer() ->
-    {quicer, {git, "https://github.com/emqx/quic.git", {tag, "0.0.9"}}}.
+    {quicer, {git, "https://github.com/emqx/quic.git", {tag, "0.0.16"}}}.
 
 jq() ->
-    {jq, {git, "https://github.com/emqx/jq", {tag, "v0.3.4"}}}.
+    {jq, {git, "https://github.com/emqx/jq", {tag, "v0.3.5"}}}.
 
 deps(Config) ->
     {deps, OldDeps} = lists:keyfind(deps, 1, Config),
     MoreDeps =
         [bcrypt() || provide_bcrypt_dep()] ++
-            [jq() || provide_jq()] ++
+            [jq() || is_jq_supported()] ++
             [quicer() || is_quicer_supported()],
     lists:keystore(deps, 1, Config, {deps, OldDeps ++ MoreDeps}).
 
@@ -77,11 +77,21 @@ is_cover_enabled() ->
 is_enterprise(ce) -> false;
 is_enterprise(ee) -> true.
 
+is_jq_supported() ->
+    not (false =/= os:getenv("BUILD_WITHOUT_JQ") orelse
+        is_win32()) orelse
+        "1" == os:getenv("BUILD_WITH_JQ").
+
 is_quicer_supported() ->
     not (false =/= os:getenv("BUILD_WITHOUT_QUIC") orelse
         is_macos() orelse
         is_win32() orelse is_centos_6()) orelse
         "1" == os:getenv("BUILD_WITH_QUIC").
+
+is_rocksdb_supported() ->
+    not (false =/= os:getenv("BUILD_WITHOUT_ROCKSDB") orelse
+        is_raspbian()) orelse
+        "1" == os:getenv("BUILD_WITH_ROCKSDB").
 
 is_macos() ->
     {unix, darwin} =:= os:type().
@@ -91,6 +101,14 @@ is_centos_6() ->
     %% glibc is too old
     case file:read_file("/etc/centos-release") of
         {ok, <<"CentOS release 6", _/binary>>} ->
+            true;
+        _ ->
+            false
+    end.
+
+is_raspbian() ->
+    case os_cmd("./scripts/get-distro.sh") of
+        "raspbian" ++ _ ->
             true;
         _ ->
             false
@@ -138,7 +156,8 @@ common_compile_opts(Edition, Vsn) ->
         {compile_info, [{emqx_vsn, Vsn}]},
         {d, 'EMQX_RELEASE_EDITION', Edition}
     ] ++
-        [{d, 'EMQX_BENCHMARK'} || os:getenv("EMQX_BENCHMARK") =:= "1"].
+        [{d, 'EMQX_BENCHMARK'} || os:getenv("EMQX_BENCHMARK") =:= "1"] ++
+        [{d, 'BUILD_WITHOUT_QUIC'} || not is_quicer_supported()].
 
 prod_compile_opts(Edition, Vsn) ->
     [
@@ -206,7 +225,7 @@ profiles_dev() ->
 
 %% RelType: cloud (full size)
 %% PkgType: bin | pkg
-%% Edition: ce (community) | ee (enterprise)
+%% Edition: ce (opensource) | ee (enterprise)
 relx(Vsn, RelType, PkgType, Edition) ->
     [
         {include_src, false},
@@ -312,37 +331,40 @@ relx_apps(ReleaseType, Edition) ->
         % started by emqx_machine
         {emqx, load},
         {emqx_conf, load},
-        emqx_machine,
-        {mnesia, load},
-        {ekka, load},
-        {emqx_plugin_libs, load},
-        {esasl, load},
-        observer_cli,
-        % started by emqx_machine
-        {system_monitor, load},
-        emqx_http_lib,
-        emqx_resource,
-        emqx_connector,
-        emqx_authn,
-        emqx_authz,
-        emqx_auto_subscribe,
-        emqx_gateway,
-        emqx_exhook,
-        emqx_bridge,
-        emqx_rule_engine,
-        emqx_modules,
-        emqx_management,
-        emqx_dashboard,
-        emqx_retainer,
-        emqx_statsd,
-        emqx_prometheus,
-        emqx_psk,
-        emqx_slow_subs,
-        emqx_plugins
+        emqx_machine
     ] ++
+        [{mnesia_rocksdb, load} || is_rocksdb_supported()] ++
+        [
+            {mnesia, load},
+            {ekka, load},
+            {emqx_plugin_libs, load},
+            {esasl, load},
+            observer_cli,
+            % started by emqx_machine
+            {system_monitor, load},
+            emqx_http_lib,
+            emqx_resource,
+            emqx_connector,
+            emqx_authn,
+            emqx_authz,
+            emqx_auto_subscribe,
+            emqx_gateway,
+            emqx_exhook,
+            emqx_bridge,
+            emqx_rule_engine,
+            emqx_modules,
+            emqx_management,
+            emqx_dashboard,
+            emqx_retainer,
+            emqx_statsd,
+            emqx_prometheus,
+            emqx_psk,
+            emqx_slow_subs,
+            emqx_plugins
+        ] ++
         [quicer || is_quicer_supported()] ++
         [bcrypt || provide_bcrypt_release(ReleaseType)] ++
-        [jq || provide_jq()] ++
+        [jq || is_jq_supported()] ++
         [{observer, load} || is_app(observer)] ++
         relx_apps_per_edition(Edition).
 
@@ -374,6 +396,7 @@ relx_overlay(ReleaseType, Edition) ->
         {template, "rel/BUILD_INFO", "releases/{{release_version}}/BUILD_INFO"},
         {copy, "bin/emqx", "bin/emqx"},
         {copy, "bin/emqx_ctl", "bin/emqx_ctl"},
+        {copy, "bin/emqx_cluster_rescue", "bin/emqx_cluster_rescue"},
         {copy, "bin/node_dump", "bin/node_dump"},
         {copy, "bin/install_upgrade.escript", "bin/install_upgrade.escript"},
         %% for relup
@@ -395,8 +418,7 @@ etc_overlay(ReleaseType, Edition) ->
     [
         {mkdir, "etc/"},
         {copy, "{{base_dir}}/lib/emqx/etc/certs", "etc/"},
-        {copy, "apps/emqx_dashboard/priv/www/static/emqx-en.conf.example", "etc/"},
-        {copy, "apps/emqx_dashboard/priv/www/static/emqx-zh.conf.example", "etc/"}
+        {copy, "apps/emqx_dashboard/etc/emqx.conf.en.example", "etc/emqx-example.conf"}
     ] ++
         lists:map(
             fun
@@ -412,21 +434,19 @@ emqx_etc_overlay(ReleaseType, Edition) ->
         emqx_etc_overlay_common().
 
 emqx_etc_overlay_per_rel(cloud) ->
-    [{"{{base_dir}}/lib/emqx/etc/emqx_cloud/vm.args", "etc/vm.args"}].
+    [{"{{base_dir}}/lib/emqx/etc/vm.args.cloud", "etc/vm.args"}].
 
 emqx_etc_overlay_common() ->
     [{"{{base_dir}}/lib/emqx/etc/ssl_dist.conf", "etc/ssl_dist.conf"}].
 
 emqx_etc_overlay_per_edition(ce) ->
     [
-        {"{{base_dir}}/lib/emqx_conf/etc/emqx.conf.all", "etc/emqx.conf"},
-        {"{{base_dir}}/lib/emqx_dashboard/etc/i18n.conf.all", "etc/i18n.conf"}
+        {"{{base_dir}}/lib/emqx_conf/etc/emqx.conf.all", "etc/emqx.conf"}
     ];
 emqx_etc_overlay_per_edition(ee) ->
     [
         {"{{base_dir}}/lib/emqx_conf/etc/emqx_enterprise.conf.all", "etc/emqx_enterprise.conf"},
-        {"{{base_dir}}/lib/emqx_conf/etc/emqx.conf.all", "etc/emqx.conf"},
-        {"{{base_dir}}/lib/emqx_dashboard/etc/i18n.conf.all", "etc/i18n.conf"}
+        {"{{base_dir}}/lib/emqx_conf/etc/emqx.conf.all", "etc/emqx.conf"}
     ].
 
 get_vsn(Profile) ->
@@ -454,9 +474,6 @@ is_debug(VarName) ->
     end.
 
 provide_bcrypt_dep() ->
-    not is_win32().
-
-provide_jq() ->
     not is_win32().
 
 provide_bcrypt_release(ReleaseType) ->

@@ -11,7 +11,8 @@ help() {
     echo "$0 PROFILE [options]"
     echo
     echo "-h|--help:       To display this usage information"
-    echo "--long:          Print log vsn number. e.g. 5.0.0-otp24.2.1-1-ubuntu20.04-amd64"
+    echo "--default:       Print default vsn number. e.g. e.g. 5.0.0-ubuntu20.04-amd64"
+    echo "--long:          Print long vsn number. e.g. 5.0.0-otp24.2.1-1-ubuntu20.04-amd64"
     echo "                 Otherwise short e.g. 5.0.0"
     echo "--elixir:        Include elixir version in the long version string"
     echo "                 e.g. 5.0.0-elixir1.13.4-otp24.2.1-1-ubuntu20.04-amd64"
@@ -32,6 +33,10 @@ while [ "$#" -gt 0 ]; do
     -h|--help)
         help
         exit 0
+        ;;
+    --default)
+        IS_DEFAULT_RELEASE='yes'
+        shift 1
         ;;
     --long)
         LONG_VERSION='yes'
@@ -96,10 +101,10 @@ if [ "$GIT_EXACT_VSN" != '' ]; then
     fi
     SUFFIX=''
 else
-    SUFFIX="-$(git rev-parse HEAD | cut -b1-8)"
+    SUFFIX="-g$(git rev-parse HEAD | cut -b1-8)"
 fi
 
-PKG_VSN="${RELEASE}${SUFFIX}"
+PKG_VSN="${PKG_VSN:-${RELEASE}${SUFFIX}}"
 
 if [ "${LONG_VERSION:-}" != 'yes' ]; then
     echo "$PKG_VSN"
@@ -115,8 +120,18 @@ fi
 OTP_VSN="${OTP_VSN:-$(./scripts/get-otp-vsn.sh)}"
 SYSTEM="$(./scripts/get-distro.sh)"
 
-UNAME="$(uname -m)"
-case "$UNAME" in
+case "$SYSTEM" in
+    windows*)
+        # directly build the default package for windows
+        IS_DEFAULT_RELEASE='yes'
+        ;;
+    *)
+        true
+        ;;
+esac
+
+UNAME_M="$(uname -m)"
+case "$UNAME_M" in
     x86_64)
         ARCH='amd64'
         ;;
@@ -128,11 +143,15 @@ case "$UNAME" in
         ;;
 esac
 
-if [ "${IS_ELIXIR:-}" = "yes" ]; then
-    ELIXIR_VSN="${ELIXIR_VSN:-$(./scripts/get-elixir-vsn.sh)}"
-    FULL_VSN="${PKG_VSN}-elixir${ELIXIR_VSN}-otp${OTP_VSN}-${SYSTEM}-${ARCH}"
+if [ "${IS_DEFAULT_RELEASE:-not-default-release}" = 'yes' ]; then
+    # when it's the default release, we do not add elixir or otp version
+    infix=''
 else
-    FULL_VSN="${PKG_VSN}-otp${OTP_VSN}-${SYSTEM}-${ARCH}"
+    infix="-otp${OTP_VSN}"
+    if [ "${IS_ELIXIR:-}" = "yes" ]; then
+        ELIXIR_VSN="${ELIXIR_VSN:-$(./scripts/get-elixir-vsn.sh)}"
+        infix="-elixir${ELIXIR_VSN}${infix}"
+    fi
 fi
 
-echo "${FULL_VSN}"
+echo "${PKG_VSN}${infix}-${SYSTEM}-${ARCH}"

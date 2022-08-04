@@ -344,6 +344,7 @@ fields("cache") ->
                 boolean(),
                 #{
                     default => true,
+                    required => true,
                     desc => ?DESC(fields_cache_enable)
                 }
             )},
@@ -438,6 +439,14 @@ fields("mqtt") ->
                     desc => ?DESC(mqtt_shared_subscription)
                 }
             )},
+        {"exclusive_subscription",
+            sc(
+                boolean(),
+                #{
+                    default => false,
+                    desc => ?DESC(mqtt_exclusive_subscription)
+                }
+            )},
         {"ignore_loop_deliver",
             sc(
                 boolean(),
@@ -472,7 +481,7 @@ fields("mqtt") ->
             )},
         {"keepalive_backoff",
             sc(
-                float(),
+                number(),
                 #{
                     default => 0.75,
                     desc => ?DESC(mqtt_keepalive_backoff)
@@ -844,14 +853,6 @@ fields("mqtt_wss_listener") ->
         ];
 fields("mqtt_quic_listener") ->
     [
-        {"enabled",
-            sc(
-                boolean(),
-                #{
-                    default => true,
-                    desc => ?DESC(fields_mqtt_quic_listener_enabled)
-                }
-            )},
         %% TODO: ensure cacertfile is configurable
         {"certfile",
             sc(
@@ -951,8 +952,7 @@ fields("ws_opts") ->
             sc(
                 comma_separated_binary(),
                 #{
-                    default => "",
-                    example => <<"http://localhost:18083, http://127.0.0.1:18083">>,
+                    default => <<"http://localhost:18083, http://127.0.0.1:18083">>,
                     desc => ?DESC(fields_ws_opts_check_origins)
                 }
             )},
@@ -990,7 +990,7 @@ fields("tcp_opts") ->
             )},
         {"backlog",
             sc(
-                integer(),
+                pos_integer(),
                 #{
                     default => 1024,
                     desc => ?DESC(fields_tcp_opts_backlog)
@@ -1032,6 +1032,7 @@ fields("tcp_opts") ->
             sc(
                 bytesize(),
                 #{
+                    default => <<"4KB">>,
                     example => <<"4KB">>,
                     desc => ?DESC(fields_tcp_opts_buffer)
                 }
@@ -1048,7 +1049,7 @@ fields("tcp_opts") ->
             sc(
                 boolean(),
                 #{
-                    default => false,
+                    default => true,
                     desc => ?DESC(fields_tcp_opts_nodelay)
                 }
             )},
@@ -1567,6 +1568,14 @@ mqtt_listener(Bind) ->
 
 base_listener(Bind) ->
     [
+        {"enabled",
+            sc(
+                boolean(),
+                #{
+                    default => true,
+                    desc => ?DESC(fields_listener_enabled)
+                }
+            )},
         {"bind",
             sc(
                 hoconsc:union([ip_port(), integer()]),
@@ -1610,10 +1619,23 @@ base_listener(Bind) ->
             )},
         {"limiter",
             sc(
-                map("ratelimit_name", emqx_limiter_schema:bucket_name()),
+                ?R_REF(
+                    emqx_limiter_schema,
+                    listener_fields
+                ),
                 #{
                     desc => ?DESC(base_listener_limiter),
-                    default => #{}
+                    default => #{
+                        <<"connection">> => #{<<"rate">> => <<"1000/s">>, <<"capacity">> => 1000}
+                    }
+                }
+            )},
+        {"enable_authn",
+            sc(
+                boolean(),
+                #{
+                    desc => ?DESC(base_listener_enable_authn),
+                    default => true
                 }
             )}
     ].
@@ -1641,7 +1663,7 @@ desc("zone") ->
     "A `Zone` defines a set of configuration items (such as the maximum number of connections)"
     " that can be shared between multiple listeners.\n\n"
     "`Listener` can refer to a `Zone` through the configuration item"
-    " <code>listener.<Protocol>.<Listener Name>.zone</code>.\n\n"
+    " <code>listener.\\<Protocol>.\\<Listener Name>.zone</code>.\n\n"
     "The configs defined in the zones will override the global configs with the same key.\n\n"
     "For example, given the following config:\n"
     "```\n"
@@ -2096,9 +2118,13 @@ to_comma_separated_atoms(Str) ->
 to_bar_separated_list(Str) ->
     {ok, string:tokens(Str, "| ")}.
 
+%% @doc support the following format:
+%%  - 127.0.0.1:1883
+%%  - ::1:1883
+%%  - [::1]:1883
 to_ip_port(Str) ->
-    case string:tokens(Str, ": ") of
-        [Ip, Port] ->
+    case split_ip_port(Str) of
+        {Ip, Port} ->
             PortVal = list_to_integer(Port),
             case inet:parse_address(Ip) of
                 {ok, R} ->
@@ -2114,6 +2140,26 @@ to_ip_port(Str) ->
             end;
         _ ->
             {error, Str}
+    end.
+
+split_ip_port(Str0) ->
+    Str = re:replace(Str0, " ", "", [{return, list}, global]),
+    case lists:split(string:rchr(Str, $:), Str) of
+        %% no port
+        {[], Str} ->
+            error;
+        {IpPlusColon, PortString} ->
+            IpStr0 = lists:droplast(IpPlusColon),
+            case IpStr0 of
+                %% dropp head/tail brackets
+                [$[ | S] ->
+                    case lists:last(S) of
+                        $] -> {lists:droplast(S), PortString};
+                        _ -> error
+                    end;
+                _ ->
+                    {IpStr0, PortString}
+            end
     end.
 
 to_erl_cipher_suite(Str) ->
@@ -2207,29 +2253,29 @@ str(B) when is_binary(B) ->
 str(S) when is_list(S) ->
     S.
 
-authentication(Type) ->
+authentication(Which) ->
     Desc =
-        case Type of
+        case Which of
             global -> ?DESC(global_authentication);
             listener -> ?DESC(listener_authentication)
         end,
-    %% authentication schema is lazy to make it more 'plugable'
-    %% the type checks are done in emqx_auth application when it boots.
-    %% and in emqx_authentication_config module for runtime changes.
-    Default = hoconsc:lazy(hoconsc:union([hoconsc:array(typerefl:map())])),
-    %% as the type is lazy, the runtime module injection
+    %% The runtime module injection
     %% from EMQX_AUTHENTICATION_SCHEMA_MODULE_PT_KEY
     %% is for now only affecting document generation.
     %% maybe in the future, we can find a more straightforward way to support
     %% * document generation (at compile time)
     %% * type checks before boot (in bin/emqx config generation)
     %% * type checks at runtime (when changing configs via management API)
+    Type0 =
+        case persistent_term:get(?EMQX_AUTHENTICATION_SCHEMA_MODULE_PT_KEY, undefined) of
+            undefined -> hoconsc:array(typerefl:map());
+            Module -> Module:root_type()
+        end,
+    %% It is a lazy type because when handing runtime update requests
+    %% the config is not checked by emqx_schema, but by the injected schema
+    Type = hoconsc:lazy(Type0),
     #{
-        type =>
-            case persistent_term:get(?EMQX_AUTHENTICATION_SCHEMA_MODULE_PT_KEY, undefined) of
-                undefined -> Default;
-                Module -> hoconsc:lazy(Module:root_type())
-            end,
+        type => Type,
         desc => Desc
     }.
 

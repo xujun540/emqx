@@ -128,41 +128,30 @@ authenticate(#{auth_method := _}, _) ->
 authenticate(
     #{password := Password} = Credential,
     #{
-        cmd := {Command, KeyTemplate, Fields},
+        cmd := {CommandName, KeyTemplate, Fields},
         resource_id := ResourceId,
         password_hash_algorithm := Algorithm
     }
 ) ->
     NKey = emqx_authn_utils:render_str(KeyTemplate, Credential),
-    case emqx_resource:query(ResourceId, {cmd, [Command, NKey | Fields]}) of
+    Command = [CommandName, NKey | Fields],
+    case emqx_resource:query(ResourceId, {cmd, Command}) of
         {ok, []} ->
             ignore;
         {ok, Values} ->
-            case merge(Fields, Values) of
-                #{<<"password_hash">> := _} = Selected ->
-                    case
-                        emqx_authn_utils:check_password_from_selected_map(
-                            Algorithm, Selected, Password
-                        )
-                    of
-                        ok ->
-                            {ok, emqx_authn_utils:is_superuser(Selected)};
-                        {error, Reason} ->
-                            {error, Reason}
-                    end;
-                _ ->
-                    ?SLOG(error, #{
-                        msg => "cannot_find_password_hash_field",
-                        cmd => Command,
-                        keys => NKey,
-                        fields => Fields,
-                        resource => ResourceId
-                    }),
-                    ignore
+            Selected = merge(Fields, Values),
+            case
+                emqx_authn_utils:check_password_from_selected_map(
+                    Algorithm, Selected, Password
+                )
+            of
+                ok ->
+                    {ok, emqx_authn_utils:is_superuser(Selected)};
+                {error, Reason} ->
+                    {error, Reason}
             end;
         {error, Reason} ->
-            ?SLOG(error, #{
-                msg => "redis_query_failed",
+            ?TRACE_AUTHN_PROVIDER(error, "redis_query_failed", #{
                 resource => ResourceId,
                 cmd => Command,
                 keys => NKey,
@@ -210,8 +199,8 @@ parse_cmd(Cmd) ->
     end.
 
 check_fields(Fields) ->
-    HasPassHash = lists:member("password_hash", Fields),
-    KnownFields = ["password_hash", "salt", "is_superuser"],
+    HasPassHash = lists:member("password_hash", Fields) orelse lists:member("password", Fields),
+    KnownFields = ["password_hash", "password", "salt", "is_superuser"],
     UnknownFields = [F || F <- Fields, not lists:member(F, KnownFields)],
 
     case {HasPassHash, UnknownFields} of

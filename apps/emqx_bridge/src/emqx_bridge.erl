@@ -17,6 +17,7 @@
 -behaviour(emqx_config_handler).
 -include_lib("emqx/include/emqx.hrl").
 -include_lib("emqx/include/logger.hrl").
+-include_lib("emqx/include/emqx_hooks.hrl").
 -include_lib("snabbkaffe/include/snabbkaffe.hrl").
 
 -export([post_config_update/5]).
@@ -105,7 +106,7 @@ load_hook(Bridges) ->
 
 do_load_hook(#{local_topic := _} = Conf) ->
     case maps:get(direction, Conf, egress) of
-        egress -> emqx_hooks:put('message.publish', {?MODULE, on_message_publish, []});
+        egress -> emqx_hooks:put('message.publish', {?MODULE, on_message_publish, []}, ?HP_BRIDGE);
         ingress -> ok
     end;
 do_load_hook(_Conf) ->
@@ -117,7 +118,7 @@ unload_hook() ->
 on_message_publish(Message = #message{topic = Topic, flags = Flags}) ->
     case maps:get(sys, Flags, false) of
         false ->
-            Msg = emqx_rule_events:eventmsg_publish(Message),
+            {Msg, _} = emqx_rule_events:eventmsg_publish(Message),
             send_to_matched_egress_bridges(Topic, Msg);
         true ->
             ok

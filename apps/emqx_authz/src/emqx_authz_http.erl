@@ -80,15 +80,26 @@ authorize(
 ) ->
     Request = generate_request(PubSub, Topic, Client, Config),
     case emqx_resource:query(ResourceID, {Method, Request, RequestTimeout}) of
-        {ok, 200, _Headers} ->
-            {matched, allow};
         {ok, 204, _Headers} ->
             {matched, allow};
-        {ok, 200, _Headers, _Body} ->
-            {matched, allow};
-        {ok, _Status, _Headers} ->
+        {ok, 200, Headers, Body} ->
+            ContentType = emqx_authz_utils:content_type(Headers),
+            case emqx_authz_utils:parse_http_resp_body(ContentType, Body) of
+                error ->
+                    ?SLOG(error, #{
+                        msg => authz_http_response_incorrect,
+                        content_type => ContentType,
+                        body => Body
+                    }),
+                    nomatch;
+                Result ->
+                    {matched, Result}
+            end;
+        {ok, Status, Headers} ->
+            log_nomtach_msg(Status, Headers, undefined),
             nomatch;
-        {ok, _Status, _Headers, _Body} ->
+        {ok, Status, Headers, Body} ->
+            log_nomtach_msg(Status, Headers, Body),
             nomatch;
         {error, Reason} ->
             ?SLOG(error, #{
@@ -98,6 +109,17 @@ authorize(
             }),
             ignore
     end.
+
+log_nomtach_msg(Status, Headers, Body) ->
+    ?SLOG(
+        debug,
+        #{
+            msg => unexpected_authz_http_response,
+            status => Status,
+            content_type => emqx_authz_utils:content_type(Headers),
+            body => Body
+        }
+    ).
 
 parse_config(
     #{

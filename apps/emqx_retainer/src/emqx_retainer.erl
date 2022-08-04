@@ -20,6 +20,7 @@
 
 -include("emqx_retainer.hrl").
 -include_lib("emqx/include/logger.hrl").
+-include_lib("emqx/include/emqx_hooks.hrl").
 
 -export([start_link/0]).
 
@@ -41,7 +42,8 @@
     delete/1,
     page_read/3,
     post_config_update/5,
-    stats_fun/0
+    stats_fun/0,
+    retained_count/0
 ]).
 
 %% gen_server callbacks
@@ -152,6 +154,9 @@ clean() ->
 delete(Topic) ->
     call({?FUNCTION_NAME, Topic}).
 
+retained_count() ->
+    call(?FUNCTION_NAME).
+
 page_read(Topic, Page, Limit) ->
     call({?FUNCTION_NAME, Topic, Page, Limit}).
 
@@ -197,6 +202,7 @@ init([]) ->
 
 handle_call({update_config, NewConf, OldConf}, _, State) ->
     State2 = update_config(State, NewConf, OldConf),
+    emqx_retainer_dispatcher:refresh_limiter(NewConf),
     {reply, ok, State2};
 handle_call(clean, _, #{context := Context} = State) ->
     clean(Context),
@@ -342,12 +348,16 @@ enable_retainer(
     #{context_id := ContextId} = State,
     #{
         msg_clear_interval := ClearInterval,
-        backend := BackendCfg
+        backend := BackendCfg,
+        flow_control := FlowControl
     }
 ) ->
     NewContextId = ContextId + 1,
     Context = create_resource(new_context(NewContextId), BackendCfg),
     load(Context),
+    emqx_limiter_server:add_bucket(
+        ?APP, internal, maps:get(batch_deliver_limiter, FlowControl, undefined)
+    ),
     State#{
         enable := true,
         context_id := NewContextId,
@@ -363,6 +373,7 @@ disable_retainer(
     } = State
 ) ->
     unload(),
+    emqx_limiter_server:del_bucket(?APP, internal),
     ok = close_resource(Context),
     State#{
         enable := false,
@@ -423,13 +434,15 @@ close_resource(_) ->
 
 -spec load(context()) -> ok.
 load(Context) ->
-    _ = emqx:hook('session.subscribed', {?MODULE, on_session_subscribed, [Context]}),
-    _ = emqx:hook('message.publish', {?MODULE, on_message_publish, [Context]}),
+    ok = emqx_hooks:put(
+        'session.subscribed', {?MODULE, on_session_subscribed, [Context]}, ?HP_RETAINER
+    ),
+    ok = emqx_hooks:put('message.publish', {?MODULE, on_message_publish, [Context]}, ?HP_RETAINER),
     emqx_stats:update_interval(emqx_retainer_stats, fun ?MODULE:stats_fun/0),
     ok.
 
 unload() ->
-    emqx:unhook('message.publish', {?MODULE, on_message_publish}),
-    emqx:unhook('session.subscribed', {?MODULE, on_session_subscribed}),
+    ok = emqx_hooks:del('message.publish', {?MODULE, on_message_publish}),
+    ok = emqx_hooks:del('session.subscribed', {?MODULE, on_session_subscribed}),
     emqx_stats:cancel_update(emqx_retainer_stats),
     ok.

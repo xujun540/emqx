@@ -64,7 +64,8 @@
     emqx_slow_subs_schema
 ]).
 
-namespace() -> cluster.
+%% root config should not have a namespace
+namespace() -> undefined.
 
 roots() ->
     PtKey = ?EMQX_AUTHENTICATION_SCHEMA_MODULE_PT_KEY,
@@ -288,12 +289,12 @@ fields(cluster_dns) ->
                     'readOnly' => true
                 }
             )},
-        {"app",
+        {"record_type",
             sc(
-                string(),
+                hoconsc:enum([a, srv]),
                 #{
-                    default => "emqx",
-                    desc => ?DESC(cluster_dns_app),
+                    default => a,
+                    desc => ?DESC(cluster_dns_record_type),
                     'readOnly' => true
                 }
             )}
@@ -364,15 +365,6 @@ fields(cluster_k8s) ->
                     'readOnly' => true
                 }
             )},
-        {"app_name",
-            sc(
-                string(),
-                #{
-                    default => "emqx",
-                    'readOnly' => true,
-                    desc => ?DESC(cluster_k8s_app_name)
-                }
-            )},
         {"namespace",
             sc(
                 string(),
@@ -412,6 +404,46 @@ fields("node") ->
                     'readOnly' => true,
                     sensitive => true,
                     desc => ?DESC(node_cookie)
+                }
+            )},
+        {"process_limit",
+            sc(
+                range(1024, 134217727),
+                #{
+                    mapping => "vm_args.+P",
+                    desc => ?DESC(process_limit),
+                    default => 2097152,
+                    'readOnly' => true
+                }
+            )},
+        {"max_ports",
+            sc(
+                range(1024, 134217727),
+                #{
+                    mapping => "vm_args.+Q",
+                    desc => ?DESC(max_ports),
+                    default => 1048576,
+                    'readOnly' => true
+                }
+            )},
+        {"dist_buffer_size",
+            sc(
+                range(1, 2097151),
+                #{
+                    mapping => "vm_args.+zdbbl",
+                    desc => ?DESC(dist_buffer_size),
+                    default => 8192,
+                    'readOnly' => true
+                }
+            )},
+        {"max_ets_tables",
+            sc(
+                pos_integer(),
+                #{
+                    mapping => "vm_args.+e",
+                    desc => ?DESC(max_ets_tables),
+                    default => 262144,
+                    'readOnly' => true
                 }
             )},
         {"data_dir",
@@ -987,7 +1019,7 @@ tr_override_conf_file(Conf, Filename) ->
 
 tr_cluster_discovery(Conf) ->
     Strategy = conf_get("cluster.discovery_strategy", Conf),
-    {Strategy, filter(options(Strategy, Conf))}.
+    {Strategy, filter(cluster_options(Strategy, Conf))}.
 
 -spec tr_logger_level(hocon:config()) -> logger:level().
 tr_logger_level(Conf) ->
@@ -1245,9 +1277,9 @@ sc(Type, Meta) -> hoconsc:mk(Type, Meta).
 
 map(Name, Type) -> hoconsc:map(Name, Type).
 
-options(static, Conf) ->
+cluster_options(static, Conf) ->
     [{seeds, conf_get("cluster.static.seeds", Conf, [])}];
-options(mcast, Conf) ->
+cluster_options(mcast, Conf) ->
     {ok, Addr} = inet:parse_address(conf_get("cluster.mcast.addr", Conf)),
     {ok, Iface} = inet:parse_address(conf_get("cluster.mcast.iface", Conf)),
     Ports = conf_get("cluster.mcast.ports", Conf),
@@ -1258,12 +1290,12 @@ options(mcast, Conf) ->
         {ttl, conf_get("cluster.mcast.ttl", Conf, 1)},
         {loop, conf_get("cluster.mcast.loop", Conf, true)}
     ];
-options(dns, Conf) ->
+cluster_options(dns, Conf) ->
     [
         {name, conf_get("cluster.dns.name", Conf)},
-        {app, conf_get("cluster.dns.app", Conf)}
+        {type, conf_get("cluster.dns.record_type", Conf)}
     ];
-options(etcd, Conf) ->
+cluster_options(etcd, Conf) ->
     Namespace = "cluster.etcd.ssl",
     SslOpts = fun(C) ->
         Options = keys(Namespace, C),
@@ -1275,16 +1307,15 @@ options(etcd, Conf) ->
         {node_ttl, conf_get("cluster.etcd.node_ttl", Conf, 60)},
         {ssl_options, filter(SslOpts(Conf))}
     ];
-options(k8s, Conf) ->
+cluster_options(k8s, Conf) ->
     [
         {apiserver, conf_get("cluster.k8s.apiserver", Conf)},
         {service_name, conf_get("cluster.k8s.service_name", Conf)},
         {address_type, conf_get("cluster.k8s.address_type", Conf, ip)},
-        {app_name, conf_get("cluster.k8s.app_name", Conf)},
         {namespace, conf_get("cluster.k8s.namespace", Conf)},
         {suffix, conf_get("cluster.k8s.suffix", Conf, "")}
     ];
-options(manual, _Conf) ->
+cluster_options(manual, _Conf) ->
     [].
 
 to_atom(Atom) when is_atom(Atom) ->

@@ -1,4 +1,4 @@
-ARG BUILD_FROM=ghcr.io/emqx/emqx-builder/5.0-16:1.13.4-24.2.1-1-debian11
+ARG BUILD_FROM=ghcr.io/emqx/emqx-builder/5.0-17:1.13.4-24.2.1-1-debian11
 ARG RUN_FROM=debian:11-slim
 FROM ${BUILD_FROM} AS builder
 
@@ -19,6 +19,10 @@ RUN export PROFILE="$EMQX_NAME" \
     && mv $EMQX_REL_PATH /emqx-rel
 
 FROM $RUN_FROM
+
+# Elixir complains if runs without UTF-8
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 
 COPY deploy/docker/docker-entrypoint.sh /usr/bin/
 COPY --from=builder /emqx-rel/emqx /opt/emqx
@@ -49,7 +53,7 @@ VOLUME ["/opt/emqx/log", "/opt/emqx/data"]
 # - 8883 port for MQTT(SSL)
 # - 11883 port for internal MQTT/TCP
 # - 18083 for dashboard
-# - 4370 default Erlang distrbution port
+# - 4370 default Erlang distribution port
 # - 5369 for backplain gen_rpc
 EXPOSE 1883 8081 8083 8084 8883 11883 18083 4370 5369
 

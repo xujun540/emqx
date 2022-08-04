@@ -39,7 +39,7 @@ jobs:
         - ubuntu20.04
         - el8
 
-    container: "ghcr.io/emqx/emqx-builder/5.0-16:${{ matrix.elixir }}-${{ matrix.otp }}-${{ matrix.os }}"
+    container: "ghcr.io/emqx/emqx-builder/5.0-17:${{ matrix.elixir }}-${{ matrix.otp }}-${{ matrix.os }}"
 
     steps:
     - uses: AutoModality/action-clean@v1
@@ -50,19 +50,6 @@ jobs:
       run: |
         echo "EMQX_NAME=${{ matrix.profile }}" >> $GITHUB_ENV
         echo "CODE_PATH=$GITHUB_WORKSPACE" >> $GITHUB_ENV
-    - name: Get deps git refs for cache
-      id: deps-refs
-      run: |
-        git config --global --add safe.directory "/__w/emqx/emqx"
-        scripts/get-dep-refs.sh
-        make clean-all
-    - name: load quicer cache
-      uses: actions/cache@v2
-      with:
-        path: |
-          _build/default/lib/quicer/
-          deps/quicer/
-        key: ${{ matrix.os }}-${{ matrix.elixir }}-${{ matrix.otp }}-amd64-${{ steps.deps-refs.outputs.DEP_QUICER_REF }}
     - name: Work around https://github.com/actions/checkout/issues/766
       run: |
         git config --global --add safe.directory "$GITHUB_WORKSPACE"
@@ -89,7 +76,7 @@ jobs:
     - uses: actions/upload-artifact@v2
       with:
         name: ${{ matrix.profile}}-${{ matrix.otp }}-${{ matrix.os }}
-        path: _packages/${{ matrix.profile}}/*.tar.gz
+        path: _packages/${{ matrix.profile}}/*
     - uses: actions/upload-artifact@v2
       with:
         name: "${{ matrix.profile }}_schema_dump"
@@ -130,6 +117,10 @@ jobs:
         echo "EMQX installed"
         ./_build/${{ matrix.profile }}/rel/emqx/bin/emqx uninstall
         echo "EMQX uninstalled"
+    - uses: actions/upload-artifact@v2
+      with:
+        name: windows
+        path: _packages/${{ matrix.profile}}/*
 
   mac:
     strategy:
@@ -142,7 +133,6 @@ jobs:
         - 24.2.1-1
         macos:
         - macos-11
-        - macos-10.15
 
     runs-on: ${{ matrix.macos }}
 
@@ -151,7 +141,7 @@ jobs:
     - name: prepare
       run: |
         brew update
-        brew install curl zip unzip kerl
+        brew install curl zip unzip kerl coreutils
         echo "/usr/local/opt/bison/bin" >> $GITHUB_PATH
         echo "/usr/local/bin" >> $GITHUB_PATH
         echo "EMQX_NAME=${{ matrix.profile }}" >> $GITHUB_ENV
@@ -171,21 +161,6 @@ jobs:
         kerl update releases
         kerl build ${{ matrix.otp }}
         kerl install ${{ matrix.otp }} $HOME/.kerl/${{ matrix.otp }}
-    - name: Get deps git refs for cache
-      id: deps-refs
-      env:
-        AUTO_INSTALL_BUILD_DEPS: 1
-      run: |
-        . $HOME/.kerl/${{ matrix.otp }}/activate
-        make ensure-rebar3
-        sudo cp rebar3 /usr/local/bin/rebar3
-        scripts/get-dep-refs.sh
-        make clean-all
-    - name: load quicer cache
-      uses: actions/cache@v2
-      with:
-        path: _build/default/lib/quicer/
-        key: ${{ matrix.macos }}-${{ matrix.otp }}-macos-${{ steps.deps-refs.outputs.DEP_QUICER_REF }}
     - name: build ${{ matrix.profile }}
       env:
         AUTO_INSTALL_BUILD_DEPS: 1
@@ -220,7 +195,7 @@ jobs:
     - uses: actions/upload-artifact@v2
       with:
         name: macos
-        path: _packages/**/*.tar.gz
+        path: _packages/**/*
 
   spellcheck:
     needs: linux

@@ -21,6 +21,7 @@
 -include("emqx.hrl").
 -include("types.hrl").
 -include("logger.hrl").
+-include("emqx_hooks.hrl").
 
 -export([
     start_link/0,
@@ -190,7 +191,7 @@ load_event_hooks(Events) ->
                 ok;
             ({K, true}) ->
                 {HookPoint, Fun} = hook_and_fun(K),
-                emqx_hooks:put(HookPoint, {?MODULE, Fun, []})
+                emqx_hooks:put(HookPoint, {?MODULE, Fun, []}, ?HP_SYS_MSGS)
         end,
         Events
     ).
@@ -332,7 +333,7 @@ publish(brokers, Nodes) ->
     safe_publish(<<"$SYS/brokers">>, #{retain => true}, Payload);
 publish(stats, Stats) ->
     [
-        safe_publish(systop(lists:concat(['stats/', Stat])), integer_to_binary(Val))
+        safe_publish(systop(stats_topic(Stat)), integer_to_binary(Val))
      || {Stat, Val} <- Stats, is_atom(Stat), is_integer(Val)
     ];
 publish(metrics, Metrics) ->
@@ -350,7 +351,13 @@ publish(Event, Payload) when
     safe_publish(Topic, emqx_json:encode(Payload)).
 
 metric_topic(Name) ->
-    lists:concat(["metrics/", string:replace(atom_to_list(Name), ".", "/", all)]).
+    translate_topic("metrics/", Name).
+
+stats_topic(Name) ->
+    translate_topic("stats/", Name).
+
+translate_topic(Prefix, Name) ->
+    lists:concat([Prefix, string:replace(atom_to_list(Name), ".", "/", all)]).
 
 safe_publish(Topic, Payload) ->
     safe_publish(Topic, #{}, Payload).

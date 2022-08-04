@@ -140,18 +140,18 @@ create_https_auth_with_ssl_opts(SpecificSSLOpts) ->
 raw_https_auth_config(SpecificSSLOpts) ->
     SSLOpts = maps:merge(
         emqx_authn_test_lib:client_ssl_cert_opts(),
-        #{enable => <<"true">>}
+        #{<<"enable">> => <<"true">>}
     ),
     #{
-        mechanism => <<"password_based">>,
-        enable => <<"true">>,
+        <<"mechanism">> => <<"password_based">>,
+        <<"enable">> => <<"true">>,
 
-        backend => <<"http">>,
-        method => <<"get">>,
-        url => <<"https://127.0.0.1:32334/auth">>,
-        body => #{<<"username">> => ?PH_USERNAME, <<"password">> => ?PH_PASSWORD},
-        headers => #{<<"X-Test-Header">> => <<"Test Value">>},
-        ssl => maps:merge(SSLOpts, SpecificSSLOpts)
+        <<"backend">> => <<"http">>,
+        <<"method">> => <<"get">>,
+        <<"url">> => <<"https://127.0.0.1:32334/auth">>,
+        <<"body">> => #{<<"username">> => ?PH_USERNAME, <<"password">> => ?PH_PASSWORD},
+        <<"headers">> => #{<<"X-Test-Header">> => <<"Test Value">>},
+        <<"ssl">> => maps:merge(SSLOpts, SpecificSSLOpts)
     }.
 
 start_apps(Apps) ->
@@ -167,6 +167,8 @@ cert_path(FileName) ->
 cowboy_handler(Req0, State) ->
     Req = cowboy_req:reply(
         200,
+        #{<<"content-type">> => <<"application/json">>},
+        jiffy:encode(#{result => allow, is_superuser => false}),
         Req0
     ),
     {ok, Req, State}.

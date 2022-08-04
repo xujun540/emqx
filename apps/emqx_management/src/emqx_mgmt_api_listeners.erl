@@ -25,6 +25,9 @@
     listener_type_status/2,
     list_listeners/2,
     crud_listeners_by_id/2,
+    stop_listeners_by_id/2,
+    start_listeners_by_id/2,
+    restart_listeners_by_id/2,
     action_listeners_by_id/2
 ]).
 
@@ -53,7 +56,9 @@ paths() ->
         "/listeners_status",
         "/listeners",
         "/listeners/:id",
-        "/listeners/:id/:action"
+        "/listeners/:id/stop",
+        "/listeners/:id/start",
+        "/listeners/:id/restart"
     ].
 
 schema("/listeners_status") ->
@@ -136,19 +141,48 @@ schema("/listeners/:id") ->
             }
         }
     };
-schema("/listeners/:id/:action") ->
+schema("/listeners/:id/start") ->
     #{
-        'operationId' => action_listeners_by_id,
+        'operationId' => start_listeners_by_id,
         post => #{
             tags => [<<"listeners">>],
-            desc => <<"Start/stop/restart listeners on all nodes.">>,
+            desc => <<"Start the listener on all nodes.">>,
             parameters => [
-                ?R_REF(listener_id),
-                ?R_REF(action)
+                ?R_REF(listener_id)
             ],
             responses => #{
                 200 => <<"Updated">>,
-                400 => error_codes(['BAD_REQUEST'])
+                400 => error_codes(['BAD_REQUEST', 'BAD_LISTENER_ID'])
+            }
+        }
+    };
+schema("/listeners/:id/stop") ->
+    #{
+        'operationId' => stop_listeners_by_id,
+        post => #{
+            tags => [<<"listeners">>],
+            desc => <<"Stop the listener on all nodes.">>,
+            parameters => [
+                ?R_REF(listener_id)
+            ],
+            responses => #{
+                200 => <<"Updated">>,
+                400 => error_codes(['BAD_REQUEST', 'BAD_LISTENER_ID'])
+            }
+        }
+    };
+schema("/listeners/:id/restart") ->
+    #{
+        'operationId' => restart_listeners_by_id,
+        post => #{
+            tags => [<<"listeners">>],
+            desc => <<"Restart listeners on all nodes.">>,
+            parameters => [
+                ?R_REF(listener_id)
+            ],
+            responses => #{
+                200 => <<"Updated">>,
+                400 => error_codes(['BAD_REQUEST', 'BAD_LISTENER_ID'])
             }
         }
     }.
@@ -161,15 +195,6 @@ fields(listener_id) ->
                 example => 'tcp:demo',
                 validator => fun validate_id/1,
                 required => true,
-                in => path
-            })}
-    ];
-fields(action) ->
-    [
-        {action,
-            ?HOCON(?ENUM([start, stop, restart]), #{
-                desc => "listener action",
-                example => start,
                 in => path
             })}
     ];
@@ -193,11 +218,13 @@ fields(listener_type_status) ->
 fields(listener_id_status) ->
     fields(listener_id) ++
         [
+            {type, ?HOCON(?ENUM(listeners_type()), #{desc => "Listener type", required => true})},
+            {name, ?HOCON(string(), #{desc => "Listener name", required => true})},
             {enable, ?HOCON(boolean(), #{desc => "Listener enable", required => true})},
             {number, ?HOCON(typerefl:pos_integer(), #{desc => "ListenerId counter"})},
             {bind,
                 ?HOCON(
-                    hoconsc:union([emqx_schema:ip_port(), integer()]),
+                    emqx_schema:ip_port(),
                     #{desc => "Listener bind addr", required => true}
                 )},
             {acceptors, ?HOCON(typerefl:pos_integer(), #{desc => "ListenerId acceptors"})},
@@ -206,12 +233,24 @@ fields(listener_id_status) ->
         ];
 fields(status) ->
     [
+        {running,
+            ?HOCON(
+                hoconsc:union([inconsistent, boolean()]),
+                #{desc => "Listener running status", required => true}
+            )},
         {max_connections,
             ?HOCON(hoconsc:union([infinity, integer()]), #{desc => "Max connections"})},
         {current_connections, ?HOCON(non_neg_integer(), #{desc => "Current connections"})}
     ];
 fields(node_status) ->
-    fields(node) ++ fields(status);
+    [
+        {"node",
+            ?HOCON(atom(), #{
+                desc => "Node name",
+                example => "emqx@127.0.0.1"
+            })},
+        {status, ?HOCON(?R_REF(status))}
+    ];
 fields(Type) ->
     Listeners = listeners_info(#{bind => true}) ++ listeners_info(#{bind => false}),
     [Schema] = [S || #{ref := ?R_REF(_, T), schema := S} <- Listeners, T =:= Type],
@@ -286,7 +325,7 @@ listener_type_status(get, _Request) ->
     Listeners = maps:to_list(listener_status_by_type(list_listeners(), #{})),
     List = lists:map(
         fun({Type, L}) ->
-            L1 = maps:without([bind, acceptors], L),
+            L1 = maps:without([bind, acceptors, name], L),
             L1#{type => Type}
         end,
         Listeners
@@ -355,73 +394,60 @@ crud_listeners_by_id(post, #{bindings := #{id := Id}, body := Body0}) ->
     end;
 crud_listeners_by_id(delete, #{bindings := #{id := Id}}) ->
     {ok, #{type := Type, name := Name}} = emqx_listeners:parse_listener_id(Id),
-    case remove([listeners, Type, Name]) of
+    case ensure_remove([listeners, Type, Name]) of
         {ok, _} -> {204};
-        {error, not_found} -> {204};
         {error, Reason} -> {400, #{code => 'BAD_REQUEST', message => err_msg(Reason)}}
     end.
 
 parse_listener_conf(Conf0) ->
-    Conf1 = maps:remove(<<"running">>, Conf0),
-    Conf2 = maps:remove(<<"current_connections">>, Conf1),
-    {IdBin, Conf3} = maps:take(<<"id">>, Conf2),
-    {TypeBin, Conf4} = maps:take(<<"type">>, Conf3),
+    Conf1 = maps:without([<<"running">>, <<"current_connections">>], Conf0),
+    {IdBin, Conf2} = maps:take(<<"id">>, Conf1),
+    {TypeBin, Conf3} = maps:take(<<"type">>, Conf2),
     {ok, #{type := Type, name := Name}} = emqx_listeners:parse_listener_id(IdBin),
     TypeAtom = binary_to_existing_atom(TypeBin),
     case Type =:= TypeAtom of
-        true -> {binary_to_existing_atom(IdBin), TypeAtom, Name, Conf4};
+        true -> {binary_to_existing_atom(IdBin), TypeAtom, Name, Conf3};
         false -> {error, listener_type_inconsistent}
     end.
 
+stop_listeners_by_id(Method, Body = #{bindings := Bindings}) ->
+    action_listeners_by_id(
+        Method,
+        Body#{bindings := maps:put(action, stop, Bindings)}
+    ).
+start_listeners_by_id(Method, Body = #{bindings := Bindings}) ->
+    action_listeners_by_id(
+        Method,
+        Body#{bindings := maps:put(action, start, Bindings)}
+    ).
+restart_listeners_by_id(Method, Body = #{bindings := Bindings}) ->
+    action_listeners_by_id(
+        Method,
+        Body#{bindings := maps:put(action, restart, Bindings)}
+    ).
+
 action_listeners_by_id(post, #{bindings := #{id := Id, action := Action}}) ->
-    Results = [action_listeners(Node, Id, Action) || Node <- mria_mnesia:running_nodes()],
-    case
-        lists:filter(
-            fun
-                ({_, {200}}) -> false;
-                (_) -> true
-            end,
-            Results
-        )
-    of
-        [] -> {200};
-        Errors -> {400, #{code => 'BAD_REQUEST', message => action_listeners_err(Errors)}}
+    {ok, #{type := Type, name := Name}} = emqx_listeners:parse_listener_id(Id),
+    Path = [listeners, Type, Name],
+    case emqx_conf:get_raw(Path, undefined) of
+        undefined ->
+            {404, #{code => 'BAD_LISTENER_ID', message => ?LISTENER_NOT_FOUND}};
+        _PrevConf ->
+            case action(Path, Action, enabled(Action)) of
+                {ok, #{raw_config := _RawConf}} ->
+                    {200};
+                {error, not_found} ->
+                    {404, #{code => 'BAD_LISTENER_ID', message => ?LISTENER_NOT_FOUND}};
+                {error, Reason} ->
+                    {400, #{code => 'BAD_REQUEST', message => err_msg(Reason)}}
+            end
     end.
 
 %%%==============================================================================================
 
-action_listeners(Node, Id, Action) ->
-    {Node, do_action_listeners(Action, Node, Id)}.
-
-do_action_listeners(start, Node, Id) ->
-    case wrap_rpc(emqx_broker_proto_v1:start_listener(Node, Id)) of
-        ok -> {200};
-        {error, {already_started, _}} -> {200};
-        {error, Reason} -> {400, #{code => 'BAD_REQUEST', message => err_msg(Reason)}}
-    end;
-do_action_listeners(stop, Node, Id) ->
-    case wrap_rpc(emqx_broker_proto_v1:stop_listener(Node, Id)) of
-        ok -> {200};
-        {error, not_found} -> {200};
-        {error, Reason} -> {400, #{code => 'BAD_REQUEST', message => err_msg(Reason)}}
-    end;
-do_action_listeners(restart, Node, Id) ->
-    case wrap_rpc(emqx_broker_proto_v1:restart_listener(Node, Id)) of
-        ok -> {200};
-        {error, not_found} -> do_action_listeners(start, Node, Id);
-        {error, Reason} -> {400, #{code => 'BAD_REQUEST', message => err_msg(Reason)}}
-    end.
-
-action_listeners_err(Errors) ->
-    list_to_binary(
-        lists:foldl(
-            fun({Node, Err}, Str) ->
-                err_msg_str(#{node => Node, error => Err}) ++ "; " ++ Str
-            end,
-            "",
-            Errors
-        )
-    ).
+enabled(start) -> #{<<"enabled">> => true};
+enabled(stop) -> #{<<"enabled">> => false};
+enabled(restart) -> #{<<"enabled">> => true}.
 
 err_msg(Atom) when is_atom(Atom) -> atom_to_binary(Atom);
 err_msg(Reason) -> list_to_binary(err_msg_str(Reason)).
@@ -433,7 +459,7 @@ list_listeners() ->
     [list_listeners(Node) || Node <- mria_mnesia:running_nodes()].
 
 list_listeners(Node) ->
-    wrap_rpc(emqx_management_proto_v1:list_listeners(Node)).
+    wrap_rpc(emqx_management_proto_v2:list_listeners(Node)).
 
 listener_status_by_id(NodeL) ->
     Listeners = maps:to_list(listener_status_by_id(NodeL, #{})),
@@ -441,7 +467,7 @@ listener_status_by_id(NodeL) ->
         fun({Id, L}) ->
             L1 = maps:remove(ids, L),
             #{node_status := Nodes} = L1,
-            L1#{number => maps:size(Nodes), id => Id}
+            L1#{number => length(Nodes), id => Id}
         end,
         Listeners
     ).
@@ -498,67 +524,75 @@ wrap_rpc(Res) ->
 format_status(Key, Node, Listener, Acc) ->
     #{
         <<"id">> := Id,
+        <<"type">> := Type,
+        <<"enabled">> := Enabled,
         <<"running">> := Running,
         <<"max_connections">> := MaxConnections,
         <<"current_connections">> := CurrentConnections,
         <<"acceptors">> := Acceptors,
         <<"bind">> := Bind
     } = Listener,
+    {ok, #{name := Name}} = emqx_listeners:parse_listener_id(Id),
     GroupKey = maps:get(Key, Listener),
     case maps:find(GroupKey, Acc) of
         error ->
             Acc#{
                 GroupKey => #{
-                    enable => Running,
+                    name => Name,
+                    type => Type,
+                    enable => Enabled,
                     ids => [Id],
                     acceptors => Acceptors,
-                    bind => Bind,
+                    bind => iolist_to_binary(emqx_listeners:format_bind(Bind)),
                     status => #{
+                        running => Running,
                         max_connections => MaxConnections,
                         current_connections => CurrentConnections
                     },
-                    node_status => #{
-                        Node => #{
-                            max_connections => MaxConnections,
-                            current_connections => CurrentConnections
+                    node_status => [
+                        #{
+                            node => Node,
+                            status => #{
+                                running => Running,
+                                max_connections => MaxConnections,
+                                current_connections => CurrentConnections
+                            }
                         }
-                    }
+                    ]
                 }
             };
         {ok, GroupValue} ->
             #{
                 ids := Ids,
                 status := #{
+                    running := Running0,
                     max_connections := MaxConnections0,
                     current_connections := CurrentConnections0
                 },
                 node_status := NodeStatus0
             } = GroupValue,
-            NodeStatus =
-                case maps:find(Node, NodeStatus0) of
-                    error ->
-                        #{
-                            Node => #{
-                                max_connections => MaxConnections,
-                                current_connections => CurrentConnections
-                            }
-                        };
-                    {ok, #{
-                        max_connections := PrevMax,
-                        current_connections := PrevCurr
-                    }} ->
-                        NodeStatus0#{
-                            Node => #{
-                                max_connections => max_conn(MaxConnections, PrevMax),
-                                current_connections => CurrentConnections + PrevCurr
-                            }
-                        }
+            NodeStatus = [
+                #{
+                    node => Node,
+                    status => #{
+                        running => Running,
+                        max_connections => MaxConnections,
+                        current_connections => CurrentConnections
+                    }
+                }
+                | NodeStatus0
+            ],
+            NRunning =
+                case Running == Running0 of
+                    true -> Running0;
+                    _ -> inconsistent
                 end,
             Acc#{
                 GroupKey =>
                     GroupValue#{
                         ids => lists:usort([Id | Ids]),
                         status => #{
+                            running => NRunning,
                             max_connections => max_conn(MaxConnections0, MaxConnections),
                             current_connections => CurrentConnections0 + CurrentConnections
                         },
@@ -574,10 +608,13 @@ max_conn(Int1, Int2) -> Int1 + Int2.
 update(Path, Conf) ->
     wrap(emqx_conf:update(Path, {update, Conf}, ?OPTS(cluster))).
 
+action(Path, Action, Conf) ->
+    wrap(emqx_conf:update(Path, {action, Action, Conf}, ?OPTS(cluster))).
+
 create(Path, Conf) ->
     wrap(emqx_conf:update(Path, {create, Conf}, ?OPTS(cluster))).
 
-remove(Path) ->
+ensure_remove(Path) ->
     wrap(emqx_conf:remove(Path, ?OPTS(cluster))).
 
 wrap({error, {post_config_update, emqx_listeners, Reason}}) -> {error, Reason};
@@ -590,17 +627,27 @@ listener_type_status_example() ->
         #{
             enable => false,
             ids => ["tcp:demo"],
-            node_status => #{
-                'emqx@127.0.0.1' => #{
-                    current_connections => 11,
-                    max_connections => 1024000
-                },
-                'emqx@127.0.0.2' => #{
-                    current_connections => 10,
-                    max_connections => 1024000
-                }
-            },
+            node_status =>
+                [
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 11,
+                            max_connections => 1024000
+                        }
+                    },
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 10,
+                            max_connections => 1024000
+                        }
+                    }
+                ],
             status => #{
+                running => true,
                 current_connections => 21,
                 max_connections => 2048000
             },
@@ -609,17 +656,28 @@ listener_type_status_example() ->
         #{
             enable => false,
             ids => ["ssl:default"],
-            node_status => #{
-                'emqx@127.0.0.1' => #{
-                    current_connections => 31,
-                    max_connections => infinity
-                },
-                'emqx@127.0.0.2' => #{
-                    current_connections => 40,
-                    max_connections => infinity
-                }
-            },
+            node_status =>
+                [
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 31,
+                            max_connections => infinity
+                        }
+                    },
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 40,
+                            max_connections => infinity
+                        }
+                    }
+                ],
+
             status => #{
+                running => true,
                 current_connections => 71,
                 max_connections => infinity
             },
@@ -634,18 +692,30 @@ listener_id_status_example() ->
             bind => <<"0.0.0.0:1884">>,
             enable => true,
             id => <<"tcp:demo">>,
-            node_status => #{
-                'emqx@127.0.0.1' => #{
-                    current_connections => 100,
-                    max_connections => 1024000
-                },
-                'emqx@127.0.0.2' => #{
-                    current_connections => 101,
-                    max_connections => 1024000
-                }
-            },
+            type => <<"tcp">>,
+            name => <<"demo">>,
+            node_status =>
+                [
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 100,
+                            max_connections => 1024000
+                        }
+                    },
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 101,
+                            max_connections => 1024000
+                        }
+                    }
+                ],
             number => 2,
             status => #{
+                running => true,
                 current_connections => 201,
                 max_connections => 2048000
             }
@@ -655,18 +725,30 @@ listener_id_status_example() ->
             bind => <<"0.0.0.0:1883">>,
             enable => true,
             id => <<"tcp:default">>,
-            node_status => #{
-                'emqx@127.0.0.1' => #{
-                    current_connections => 300,
-                    max_connections => infinity
-                },
-                'emqx@127.0.0.2' => #{
-                    current_connections => 201,
-                    max_connections => infinity
-                }
-            },
+            type => <<"tcp">>,
+            name => <<"default">>,
+            node_status =>
+                [
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 200,
+                            max_connections => infinity
+                        }
+                    },
+                    #{
+                        node => 'emqx@127.0.0.1',
+                        status => #{
+                            running => true,
+                            current_connections => 301,
+                            max_connections => infinity
+                        }
+                    }
+                ],
             number => 2,
             status => #{
+                running => true,
                 current_connections => 501,
                 max_connections => infinity
             }
